@@ -1,0 +1,36 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch PF Dashboard Server",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}",
+      "env": {
+        "GO111MODULE": "on"
+      },
+      "buildFlags": "",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Launch UI Dev Server",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npm run dev",
+      "cwd": "${workspaceFolder}/ui",
+      "env": {
+        "PORT": "5173"
+      }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Dashboard + UI Dev",
+      "configurations": [
+        "Launch PF Dashboard Server",
+        "Launch UI Dev Server"
+      ]
+    }
+  ]
+}
