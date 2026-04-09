@@ -1,0 +1,27 @@
+[Unit]
+Description=PF Dashboard service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pf-dashboard
+Group=pf-dashboard
+EnvironmentFile=-/etc/default/pf-dashboard
+EnvironmentFile=-/etc/sysconfig/pf-dashboard
+ExecStart=/usr/bin/pf-dashboard $PF_DASHBOARD_FLAGS
+Restart=on-failure
+RestartSec=2s
+
+# Service hardening: keep writable access narrow and block privilege escalation.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pf-dashboard
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
+

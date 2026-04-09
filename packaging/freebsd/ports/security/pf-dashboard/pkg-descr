@@ -1,0 +1,9 @@
+pf-dashboard is a web dashboard for firewall diagnostics with a primary focus
+on FreeBSD PF.
+
+It provides blocked/passed traffic views, rule counters, refresh/config APIs,
+and optional OIDC authentication for browser access.
+
+The Linux nftables backend exists, but PF on FreeBSD/OpenBSD is the primary
+deployment target.
+

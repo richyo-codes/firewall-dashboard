@@ -1,0 +1,73 @@
+version: 2
+project_name: pf-dashboard
+
+before:
+  hooks:
+    - make ui-build
+
+builds:
+  - id: pf-dashboard
+    main: .
+    binary: pf-dashboard
+    env:
+      - CGO_ENABLED=0
+      - GOCACHE={{ .Env.PWD }}/.cache/go-build
+      - GOMODCACHE={{ .Env.PWD }}/.modcache
+    goos:
+      - linux
+      - freebsd
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: freebsd
+        goarch: arm64
+    ldflags:
+      - -s -w
+
+archives:
+  - id: release-tarballs
+    ids:
+      - pf-dashboard
+    name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files:
+      - README.md
+
+nfpms:
+  - id: linux-packages
+    file_name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Arch }}'
+    bindir: /usr/bin
+    formats:
+      - deb
+      - rpm
+    package_name: pf-dashboard
+    maintainer: PF Dashboard Maintainers
+    description: FreeBSD PF dashboard prototype with embedded web UI.
+    homepage: https://github.com/ry/pfctl-golang
+    license: UNLICENSED
+    replaces:
+      - pf-dashboard
+    suggests:
+      - nftables
+      - conntrack
+    scripts:
+      preinstall: packaging/scripts/preinstall.sh
+      postinstall: packaging/scripts/postinstall.sh
+      postremove: packaging/scripts/postremove.sh
+    contents:
+      - src: packaging/systemd/pf-dashboard.service
+        dst: /lib/systemd/system/pf-dashboard.service
+        type: config|noreplace
+        file_info:
+          mode: 0644
+      - src: packaging/config/pf-dashboard.env
+        dst: /etc/default/pf-dashboard
+        type: config|noreplace
+        file_info:
+          mode: 0644
+
+checksum:
+  name_template: '{{ .ProjectName }}_checksums.txt'
+
+changelog:
+  use: github

@@ -1,0 +1,11 @@
+# Example /etc/rc.conf settings for pf-dashboard.
+
+pf_dashboard_enable="YES"
+pf_dashboard_user="pf-dashboard"
+pf_dashboard_group="pf-dashboard"
+pf_dashboard_command="/usr/local/sbin/pf-dashboard"
+pf_dashboard_flags="--server.addr=0.0.0.0:8080 --firewall.backend=pf"
+
+# Optional environment variables passed to the daemon process.
+# pf_dashboard_env="PFCTL_DASHBOARD_AUTH_MODE=none"
+

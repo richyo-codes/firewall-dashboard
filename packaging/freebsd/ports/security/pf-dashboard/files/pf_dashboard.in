@@ -1,0 +1,38 @@
+#!/bin/sh
+#
+# PROVIDE: pf_dashboard
+# REQUIRE: LOGIN
+# KEYWORD: shutdown
+#
+
+. /etc/rc.subr
+
+name=pf_dashboard
+rcvar=pf_dashboard_enable
+
+load_rc_config $name
+
+: ${pf_dashboard_enable:="NO"}
+: ${pf_dashboard_user:="pf-dashboard"}
+: ${pf_dashboard_group:="pf-dashboard"}
+: ${pf_dashboard_command:="%%PREFIX%%/bin/pf-dashboard"}
+: ${pf_dashboard_flags:=""}
+: ${pf_dashboard_env:=""}
+: ${pf_dashboard_rundir:="/var/run/pf-dashboard"}
+: ${pf_dashboard_logdir:="/var/log/pf-dashboard"}
+: ${pf_dashboard_logfile:="${pf_dashboard_logdir}/pf-dashboard.log"}
+
+pidfile="${pf_dashboard_rundir}/${name}.pid"
+command=/usr/sbin/daemon
+command_args="-f -P ${pidfile} -u ${pf_dashboard_user} -o ${pf_dashboard_logfile} /usr/bin/env ${pf_dashboard_env} ${pf_dashboard_command} ${pf_dashboard_flags}"
+
+start_precmd="${name}_prestart"
+
+pf_dashboard_prestart()
+{
+	install -d -m 0755 -o ${pf_dashboard_user} -g ${pf_dashboard_group} ${pf_dashboard_rundir}
+	install -d -m 0755 -o ${pf_dashboard_user} -g ${pf_dashboard_group} ${pf_dashboard_logdir}
+}
+
+run_rc_command "$1"
+

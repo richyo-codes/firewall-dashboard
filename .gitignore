@@ -1,0 +1,20 @@
+# Go build cache (when overriding GOCACHE)
+.cache/
+
+# Frontend dependencies & build artifacts
+ui/node_modules/
+ui/dist/*
+!ui/dist/placeholder.txt
+/dist/
+
+# Editor state
+.vscode/*.log
+
+# Go debugger artifacts
+__debug_bin*
+__debug*
+
+.modcache/
+/pf-dashboard
+/pf-dashboard-*
+/pfctl-debug
