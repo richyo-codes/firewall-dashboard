@@ -1,0 +1,407 @@
+openapi: 3.0.3
+info:
+  title: Firewall Dashboard API
+  version: 0.1.0
+  description: |
+    API exposed by the firewall dashboard service.
+
+    Notes:
+    - Some routes vary by authentication mode (`none` vs `oidc`).
+    - Streaming support is backend-dependent (`pf` supports it, others may return 501).
+servers:
+  - url: http://localhost:8080
+tags:
+  - name: Auth
+  - name: Traffic
+  - name: Rules
+  - name: Config
+paths:
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current authentication status
+      responses:
+        '200':
+          description: Authentication status and optional user payload
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AuthStatusNone'
+                  - $ref: '#/components/schemas/AuthStatusOIDC'
+
+  /auth/login:
+    get:
+      tags: [Auth]
+      summary: Start OIDC login flow
+      description: |
+        In `oidc` mode this redirects to the provider. In `none` mode this returns 404.
+      parameters:
+        - in: query
+          name: redirect
+          schema:
+            type: string
+          description: Optional post-login redirect path.
+      responses:
+        '302':
+          description: Redirect to OIDC provider
+        '404':
+          description: Authentication disabled
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /auth/callback:
+    get:
+      tags: [Auth]
+      summary: OIDC callback endpoint
+      description: |
+        Handles provider redirect in `oidc` mode. In `none` mode this returns 404.
+      parameters:
+        - in: query
+          name: state
+          schema:
+            type: string
+        - in: query
+          name: code
+          schema:
+            type: string
+        - in: query
+          name: redirect
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Login completed and redirected
+        '400':
+          description: Invalid callback parameters (missing/invalid state/code)
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: Invalid ID token
+          content:
+            text/plain:
+              schema:
+                type: string
+        '502':
+          description: OIDC provider/token exchange failure
+          content:
+            text/plain:
+              schema:
+                type: string
+        '404':
+          description: Authentication disabled
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /auth/logout:
+    get:
+      tags: [Auth]
+      summary: Logout current session
+      responses:
+        '204':
+          description: Session cleared
+    post:
+      tags: [Auth]
+      summary: Logout current session
+      responses:
+        '204':
+          description: Session cleared
+
+  /api/config/refresh:
+    get:
+      tags: [Config]
+      summary: Get client refresh/config hints
+      responses:
+        '200':
+          description: Refresh/config hints
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefreshConfig'
+
+  /api/blocked:
+    get:
+      tags: [Traffic]
+      summary: List blocked traffic entries
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Blocked traffic list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PacketLogEntry'
+        '401':
+          description: Unauthorized
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: Backend error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/passed:
+    get:
+      tags: [Traffic]
+      summary: List passed traffic entries
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Passed traffic list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PacketLogEntry'
+        '401':
+          description: Unauthorized
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: Backend error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/traffic:
+    get:
+      tags: [Traffic]
+      summary: List combined traffic (blocked + passed)
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Combined traffic list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PacketLogEntry'
+        '401':
+          description: Unauthorized
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: Backend error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/stream/traffic:
+    get:
+      tags: [Traffic]
+      summary: Stream live traffic lines
+      description: |
+        Returns newline-delimited text stream. Support depends on backend.
+      security:
+        - cookieAuth: []
+      parameters:
+        - in: query
+          name: action
+          schema:
+            type: string
+            enum: [block, pass, rdr]
+          description: Optional action filter.
+      responses:
+        '200':
+          description: Streaming text response
+          content:
+            text/plain:
+              schema:
+                type: string
+        '400':
+          description: Invalid action filter
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: Stream startup failure
+          content:
+            text/plain:
+              schema:
+                type: string
+        '501':
+          description: Streaming not supported for backend
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/rules:
+    get:
+      tags: [Rules]
+      summary: List rule counters/rule list
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Rule list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RuleCounter'
+        '401':
+          description: Unauthorized
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: Backend error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: pf_session
+
+  schemas:
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+      required: [error]
+
+    User:
+      type: object
+      properties:
+        subject:
+          type: string
+        email:
+          type: string
+        name:
+          type: string
+        issuer:
+          type: string
+        expires:
+          type: string
+          format: date-time
+      required: [subject]
+
+    AuthStatusNone:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [none]
+        authenticated:
+          type: boolean
+        user:
+          nullable: true
+      required: [mode, authenticated]
+
+    AuthStatusOIDC:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [oidc]
+        authenticated:
+          type: boolean
+        user:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/User'
+      required: [mode, authenticated]
+
+    RefreshConfig:
+      type: object
+      properties:
+        trafficIntervalMs:
+          type: integer
+          format: int32
+        backend:
+          type: string
+        unifiedViewEnabled:
+          type: boolean
+        supportsUnifiedView:
+          type: boolean
+        supportsBlockedPacketDetails:
+          type: boolean
+        supportsTrafficStream:
+          type: boolean
+        supportsRuleCounters:
+          type: boolean
+      required: [trafficIntervalMs, backend, unifiedViewEnabled]
+
+    PacketLogEntry:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        interface:
+          type: string
+        source:
+          type: string
+        dest:
+          type: string
+        protocol:
+          type: string
+        action:
+          type: string
+        reason:
+          type: string
+        direction:
+          type: string
+        ruleId:
+          type: integer
+          format: int32
+      required: [timestamp, interface, source, dest, protocol, action, reason]
+
+    RuleCounter:
+      type: object
+      properties:
+        ruleId:
+          type: integer
+          format: int32
+        ruleLabel:
+          type: string
+        evaluations:
+          type: integer
+          format: int64
+        packets:
+          type: integer
+          format: int64
+        bytes:
+          type: integer
+          format: int64
+      required: [ruleId, ruleLabel, evaluations, packets, bytes]
