@@ -255,7 +255,7 @@ The unit reads optional flags/env from `/etc/default/pf-dashboard` and
 
 ### FreeBSD Ports Packaging
 
-For a local ports skeleton and `poudriere` workflow, see `PORTING.md`.
+For a local ports skeleton and `poudriere` workflow, see `docs/freebsd-porting.md`.
 
 ## Next Steps
 
