@@ -37,7 +37,7 @@ npm install
 npm run build
 
 cd ..
-go build -buildvcs=false -o pf-dashboard .
+go build -o pf-dashboard .
 ./pf-dashboard
 ```
 

@@ -1,0 +1,93 @@
+name: Native FreeBSD Build
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  native-freebsd:
+    if: ${{ github.server_url != 'https://github.com' }}
+    runs-on:
+      - self-hosted
+      - freebsd
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify FreeBSD runner toolchain
+        run: |
+          uname -a
+          command -v git
+          command -v go
+          command -v node
+          command -v npm
+          go version
+          node --version
+          npm --version
+
+      - name: Git describe
+        id: ghd
+        run: |
+          desc="$(git describe --tags --dirty --always --match 'v[0-9]*.[0-9]*.[0-9]*' || true)"
+          if echo "$desc" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+'; then
+            semver="$(echo "$desc" | sed -E 's/^v//; s/-([0-9]+)-g([0-9a-f]+)/-\1.g\2/; s/-dirty/.dirty/')"
+          elif [ -n "$desc" ]; then
+            sanitized="$(echo "$desc" | sed -E 's/[^0-9A-Za-z.+-]+/-/g')"
+            semver="0.0.0-dev+${sanitized}"
+          else
+            semver="0.0.0-dev+${GITHUB_SHA::12}"
+          fi
+          echo "describe=$desc" >> "$GITHUB_OUTPUT"
+          echo "semver=$semver" >> "$GITHUB_OUTPUT"
+
+      - name: Validate computed semver
+        run: |
+          if [ -z "${{ steps.ghd.outputs.semver }}" ]; then
+            echo "semver output is empty"
+            exit 1
+          fi
+          echo "git describe: ${{ steps.ghd.outputs.describe }}"
+          echo "computed semver: ${{ steps.ghd.outputs.semver }}"
+
+      - name: Install UI dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Build UI
+        working-directory: ui
+        run: npm run build
+
+      - name: Go build (native FreeBSD)
+        run: CGO_ENABLED=0 go build ./...
+
+      - name: Go test (native FreeBSD)
+        run: CGO_ENABLED=0 go test ./...
+
+      - name: Build FreeBSD native artifact
+        run: GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build -o dist/pf-dashboard-${{ steps.ghd.outputs.semver }}-freebsd-amd64-native .
+
+      - name: Compute artifact metadata
+        id: artifact_meta
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "mode_suffix=-pr${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode_suffix=" >> "$GITHUB_OUTPUT"
+          fi
+          echo "artifact_version=${{ steps.ghd.outputs.semver }}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload FreeBSD native build artifact
+        uses: richnetdesign/git-artifact-upload@v2
+        with:
+          name: freebsd-native-build-${{ steps.artifact_meta.outputs.artifact_version }}${{ steps.artifact_meta.outputs.mode_suffix }}
+          version: ${{ steps.artifact_meta.outputs.artifact_version }}
+          path: dist/pf-dashboard-${{ steps.artifact_meta.outputs.artifact_version }}-freebsd-amd64-native
+          if-no-files-found: error
+          retention-days: 30

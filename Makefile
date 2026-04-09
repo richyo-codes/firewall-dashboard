@@ -4,7 +4,6 @@ BINARY ?= pf-dashboard
 UI_DIR = ui
 VERSION ?= dev
 DIST_DIR = dist
-GOFLAGS ?= -buildvcs=false
 
 .PHONY: all build run test clean tidy ui-install ui-build docker-test docker-build
 .PHONY: build-linux build-freebsd release-tarball
@@ -12,13 +11,13 @@ GOFLAGS ?= -buildvcs=false
 all: build
 
 build: ui-build
-	go build $(GOFLAGS) -o $(BINARY) .
+	go build -o $(BINARY) .
 
 build-linux: ui-build
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build $(GOFLAGS) -o $(BINARY)-linux-amd64 .
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o $(BINARY)-linux-amd64 .
 
 build-freebsd: ui-build
-	GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build $(GOFLAGS) -o $(BINARY)-freebsd-amd64 .
+	GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build -o $(BINARY)-freebsd-amd64 .
 
 release-tarball: ui-build
 	@version="$(VERSION)"; \
@@ -46,7 +45,7 @@ run: build
 	./$(BINARY)
 
 test: ui-build
-	go test $(GOFLAGS) ./...
+	go test ./...
 
 tidy:
 	go mod tidy
