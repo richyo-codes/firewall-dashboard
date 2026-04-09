@@ -1,46 +1,57 @@
-# Firewall Dashboard Prototype
+# Firewall Dashboard
 
-This repository hosts an experimental firewall dashboard. The primary focus is
-the FreeBSD PF backend. The goal is to ship a single Go executable that embeds
-a Tailwind/Svelte frontend for firewall diagnostics.
+Firewall Dashboard is a Go web application with an embedded Svelte frontend for
+viewing firewall traffic, rule counters, and authentication state.
 
-The nftables backend is currently a learning exercise / experiment and is not
-the primary target.
+The primary focus is the FreeBSD/OpenBSD PF backend.
+
+The Linux `nftables` backend is currently a learning exercise / experiment and
+is not the primary target.
+
+## Overview
+
+- Single Go binary with embedded frontend assets
+- PF-focused traffic, unified view, and rule counters
+- Optional OIDC authentication
+- FreeBSD `rc.d` and Linux `systemd` packaging support
 
 ## Project Layout
 
-- `main.go` – Go web server with placeholder API routes and static file
-  embedding.
-- `ui/` – Svelte + Tailwind frontend bundled with Vite.
+- `main.go` - Go HTTP server, API handlers, and embedded static assets
+- `internal/` - firewall providers, auth, and configuration
+- `ui/` - Svelte + Tailwind frontend bundled with Vite
+- `packaging/` - service files and packaging assets
 
 ## Getting Started
 
-1. Install frontend dependencies (Node.js 18+, pnpm/npm/yarn):
+Prerequisites:
 
-   ```bash
-   cd ui
-   npm install
-   npm run build
-   ```
+- Go 1.21+
+- Node.js 18+
 
-   The build step emits assets in `ui/dist`, which are embedded into the Go
-   binary on the next build.
+Build and run:
 
-2. Build the Go binary (Go 1.21+):
+```bash
+cd ui
+npm install
+npm run build
 
-   ```bash
-   cd ..
-   go build -o pf-dashboard
-   ./pf-dashboard
-   ```
+cd ..
+go build -buildvcs=false -o pf-dashboard .
+./pf-dashboard
+```
 
-The development server runs on `http://localhost:8080`. During development you
-can run the frontend dev server (it proxies `/api` back to the Go server):
+The app runs on `http://localhost:8080` by default.
+
+During frontend development, Vite can proxy `/api` back to the Go server:
 
 ```bash
 cd ui
 npm run dev
 ```
+
+The frontend build emits assets into `ui/dist`, which are embedded into the Go
+binary on the next Go build.
 
 ### Using Make
 
@@ -60,6 +71,7 @@ Configuration uses [koanf](https://github.com/knadh/koanf) with CLI flags and
 environment variables (`PFCTL_DASHBOARD_` prefix). Examples:
 
 Default backend selection is OS-aware:
+
 - FreeBSD/OpenBSD: `pf`
 - Other platforms: `mock`
 
@@ -111,7 +123,7 @@ An OpenAPI 3.0 spec for the current HTTP API is available at `openapi.yaml`.
 
 ### Authentication
 
-Two authentication modes are supported:
+Supported authentication modes:
 
 - `none` (default) – assume an upstream reverse proxy handles auth. All API
   requests are accepted. `/api/auth/me` reports `authenticated: true` without a
@@ -133,7 +145,7 @@ PFCTL_DASHBOARD_AUTH_OIDC_REDIRECT_URL=https://dashboard.example.com/auth/callba
 ./pf-dashboard
 ```
 
-OIDC mode exposes additional routes:
+OIDC mode adds these routes:
 
 - `GET /auth/login` – redirect users to the identity provider.
 - `GET /auth/callback` – handles the redirect URI.
@@ -190,7 +202,7 @@ remote address (respecting `X-Forwarded-For` / `X-Real-IP` headers).
 - **Linux / nftables**: Requires `nft` and `conntrack` binaries. Rule counters
   are read via `nft list ruleset -j`, and active flows via
   `conntrack -L -o json`. If either executable is missing from `PATH`, startup
-  fails with an error.
+  fails with an error. Feature coverage is intentionally behind PF.
 
 ## Packaging & Services
 
@@ -256,12 +268,3 @@ The unit reads optional flags/env from `/etc/default/pf-dashboard` and
 ### FreeBSD Ports Packaging
 
 For a local ports skeleton and `poudriere` workflow, see `docs/freebsd-porting.md`.
-
-## Next Steps
-
-- Replace stubbed JSON data with calls into FreeBSD PF statistics:
-  - `/dev/pf` for rule counters and status.
-  - `pflog` parsing for live packet capture.
-  - `pfctl -sr`, `pfctl -si`, etc. for rule lists and interface stats.
-- Detect and surface `vnstat` metrics when available.
-- Package the executable with CGO disabled for easy deployment on FreeBSD 14+.
