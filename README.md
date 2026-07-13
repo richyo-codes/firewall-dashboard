@@ -1,243 +1,192 @@
 # Firewall Dashboard
 
-Firewall Dashboard is a Go web application with an embedded Svelte frontend for
-viewing firewall traffic, rule counters, and authentication state.
+Firewall Dashboard is a single-binary web application for inspecting firewall
+traffic, rule counters, and authentication state. It embeds a Svelte frontend
+in a Go server and exposes a small HTTP API for operational diagnostics.
 
-The primary focus is the FreeBSD/OpenBSD PF backend.
+PF on FreeBSD and OpenBSD is the primary deployment target. Linux nftables is
+supported as an experimental backend and has less feature coverage.
 
-The Linux `nftables` backend is currently a learning exercise / experiment and
-is not the primary target.
+## Highlights
 
-## Overview
+- Embedded web UI and JSON API in one Go binary
+- PF traffic, state, and rule-counter visibility on FreeBSD and OpenBSD
+- nftables rule and connection inspection on Linux
+- Optional OpenID Connect authentication
+- Native FreeBSD and cross-platform CI builds
+- Linux systemd, FreeBSD rc.d, and FreeBSD Ports packaging assets
 
-- Single Go binary with embedded frontend assets
-- PF-focused traffic, unified view, and rule counters
-- Optional OIDC authentication
-- FreeBSD `rc.d` and Linux `systemd` packaging support
+## Requirements
 
-## Project Layout
+- Go 1.25+
+- Node.js 20.19+ or 22.12+
+- `npm`
+- GNU Make
 
-- `main.go` - Go HTTP server, API handlers, and embedded static assets
-- `internal/` - firewall providers, auth, and configuration
-- `ui/` - Svelte + Tailwind frontend bundled with Vite
-- `packaging/` - service files and packaging assets
+Runtime dependencies depend on the selected backend:
 
-## Getting Started
+| Platform | Backend | Required commands |
+| --- | --- | --- |
+| FreeBSD / OpenBSD | `pf` | `pfctl`, `tcpdump` |
+| Linux | `nftables` | `nft`, `conntrack` |
+| Any | `mock` | None |
 
-Prerequisites:
+## Quick Start
 
-- Go 1.21+
-- Node.js 18+
-
-Build and run:
+Build the UI and server from the repository root:
 
 ```bash
-cd ui
-npm install
-npm run build
-
-cd ..
-go build -o pf-dashboard .
+make build
 ./pf-dashboard
 ```
 
-The app runs on `http://localhost:8080` by default.
+Open `http://localhost:8080`.
 
-During frontend development, Vite can proxy `/api` back to the Go server:
+`make build` runs the frontend build and embeds `ui/dist` into the binary. For
+frontend-only development, start Vite separately:
 
 ```bash
 cd ui
+npm ci
 npm run dev
 ```
 
-The frontend build emits assets into `ui/dist`, which are embedded into the Go
-binary on the next Go build.
+The Vite development server proxies `/api` requests to the Go server.
 
-### Using Make
-
-Common tasks are wrapped in the top-level `Makefile`:
+## Common Commands
 
 ```bash
-make build       # builds UI assets and Go binary
-make test        # runs go test ./...
-make run         # builds and launches ./pf-dashboard
-make docker-test # runs go test inside the Docker test stage
-make build-freebsd # cross-compiles CGO-disabled FreeBSD amd64 binary
+make build           # build the UI and application binary
+make test            # build the UI and run Go tests
+make run             # build and start the application
+make build-linux     # cross-compile a Linux amd64 binary
+make build-freebsd   # cross-compile a FreeBSD amd64 binary
+make release-tarball # create a source tarball with embedded UI assets
+make docker-test     # run tests in the Docker test stage
+make docker-build    # build the release Docker image
 ```
 
-### Configuration
+## Configuration
 
-Configuration uses [koanf](https://github.com/knadh/koanf) with CLI flags and
-environment variables (`PFCTL_DASHBOARD_` prefix). Examples:
+Configuration precedence is defaults, environment variables, then command-line
+flags. Environment variables use the `PFCTL_DASHBOARD_` prefix; nested keys use
+underscores, for example `PFCTL_DASHBOARD_SERVER_ADDR` maps to
+`server.addr`.
 
-Default backend selection is OS-aware:
+Defaults are OS-aware:
 
-- FreeBSD/OpenBSD: `pf`
-- Other platforms: `mock`
-
-```bash
-# run with explicit backend on 0.0.0.0:8081
-./pf-dashboard --server.addr=0.0.0.0:8081
-
-# switch to nftables backend via env variable
-PFCTL_DASHBOARD_FIREWALL_BACKEND=nftables ./pf-dashboard
-
-# enable verbose firewall command logging (PF/nftables)
-./pf-dashboard --firewall.debug
-
-# change client auto-refresh interval (ms)
-./pf-dashboard --server.refresh.traffic_interval_ms=1000
-```
-
-OIDC settings are intended to be configured via environment variables.
-`auth.oidc.*` CLI flags remain supported for compatibility but are hidden from
-`--help` to keep the CLI surface smaller.
+| Operating system | Default backend |
+| --- | --- |
+| FreeBSD / OpenBSD | `pf` |
+| Other platforms | `mock` |
 
 Supported backends:
 
-- `mock` – in-memory test data.
-- `pf` – FreeBSD/OpenBSD PF integration (requires a FreeBSD or OpenBSD build).
-- `nftables` – Linux nftables integration (requires a Linux build).
+| Backend | Purpose |
+| --- | --- |
+| `pf` | FreeBSD and OpenBSD PF integration |
+| `nftables` | Linux nftables integration |
+| `mock` | In-memory data for local development and testing |
 
-When an unsupported provider is requested (e.g., `pf` on Linux), the server
-exits at startup with an error.
-
-### Shell Completion
-
-Generate completions from the binary:
+The application exits during startup when a selected backend is unavailable on
+the current platform or its required commands are absent.
 
 ```bash
-# bash
-./pf-dashboard completion bash > /etc/bash_completion.d/pf-dashboard
+# Bind to all interfaces on port 8081.
+./pf-dashboard --server.addr=0.0.0.0:8081
 
-# zsh
-./pf-dashboard completion zsh > "${fpath[1]}/_pf-dashboard"
+# Use the Linux nftables backend.
+PFCTL_DASHBOARD_FIREWALL_BACKEND=nftables ./pf-dashboard
 
-# fish
-./pf-dashboard completion fish > ~/.config/fish/completions/pf-dashboard.fish
+# Enable detailed firewall command logging.
+./pf-dashboard --firewall.debug
+
+# Change the client traffic refresh interval.
+./pf-dashboard --server.refresh.traffic_interval_ms=1000
+
+# Enable HTTP request logging.
+./pf-dashboard --server.http_log
 ```
 
-### API Spec
+## Authentication
 
-An OpenAPI 3.0 spec for the current HTTP API is available at `openapi.yaml`.
+Authentication defaults to `none`, which assumes an upstream reverse proxy
+controls access. Do not expose an unauthenticated instance directly to an
+untrusted network.
 
-### Authentication
-
-Supported authentication modes:
-
-- `none` (default) – assume an upstream reverse proxy handles auth. All API
-  requests are accepted. `/api/auth/me` reports `authenticated: true` without a
-  user payload.
-- `oidc` – use OpenID Connect with the authorization-code flow. Required
-  settings: `auth.oidc.provider_url`, `auth.oidc.client_id`,
-  `auth.oidc.client_secret`, and `auth.oidc.redirect_url`. Optional settings
-  include `auth.oidc.scopes`, `auth.oidc.cookie_name`,
-  `auth.oidc.cookie_secure`, and `auth.oidc.cookie_domain`.
-
-Example configuration via environment variables:
+Set `auth.mode` to `oidc` to use the OpenID Connect authorization-code flow.
+OIDC configuration is best supplied through environment variables:
 
 ```bash
 PFCTL_DASHBOARD_AUTH_MODE=oidc \
 PFCTL_DASHBOARD_AUTH_OIDC_PROVIDER_URL=https://id.example.com/realms/main \
 PFCTL_DASHBOARD_AUTH_OIDC_CLIENT_ID=pf-dashboard \
-PFCTL_DASHBOARD_AUTH_OIDC_CLIENT_SECRET=<secret> \
+PFCTL_DASHBOARD_AUTH_OIDC_CLIENT_SECRET=replace-me \
 PFCTL_DASHBOARD_AUTH_OIDC_REDIRECT_URL=https://dashboard.example.com/auth/callback \
 ./pf-dashboard
 ```
 
-OIDC mode adds these routes:
+The required OIDC settings are the provider URL, client ID, client secret, and
+redirect URL. Optional settings include scopes and session-cookie controls.
 
-- `GET /auth/login` – redirect users to the identity provider.
-- `GET /auth/callback` – handles the redirect URI.
-- `POST /auth/logout` (also accepts `GET`) – clears session cookies.
-- `GET /api/auth/me` – returns authentication status and user info.
-- `GET /api/config/refresh` – returns polling interval hints for the SPA.
-- `GET /api/stream/traffic?action=block|pass|rdr` – live tcpdump stream (PF only).
+When OIDC is enabled, the application provides `/auth/login`, `/auth/callback`,
+and `/auth/logout`. Authentication status is available at `/api/auth/me`.
 
-## Least-Privilege Setup
+## Permissions and Platform Setup
 
-### Linux (nftables)
+The process needs permission to query the firewall and read traffic data. Grant
+only the capabilities or device access required by the selected backend.
+
+### Linux nftables
 
 ```bash
 sudo apt install libcap2-bin
 sudo setcap 'cap_net_admin,cap_net_raw+ep' /path/to/pf-dashboard
 ```
 
-**systemd**: set `AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW` and `CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW`.
+For systemd deployments, configure `AmbientCapabilities=CAP_NET_ADMIN
+CAP_NET_RAW` and `CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW`. Remove
+capabilities with `sudo setcap -r /path/to/pf-dashboard`.
 
-Remove capabilities: `sudo setcap -r /path/to/pf-dashboard`.
+### FreeBSD PF
 
-### FreeBSD (PF)
+Configure access to PF and BPF devices in `/etc/devfs.conf`:
 
-Adjust `/etc/devfs.conf`:
-
-```
+```text
 perm pf 0660
 perm bpf* 0660
 own pf root:pf
 own bpf* root:pf
 ```
 
-Add the service user to group `pf`, then `service devfs restart`.
+Add the service account to the `pf` group, then apply the configuration with
+`service devfs restart`.
 
-### HTTP Logging
+## Deployment and Packaging
 
-Enable verbose request logging with:
+### Linux packages
 
-```bash
-./pf-dashboard --server.http_log
-```
-
-Each request is logged with method, path, status, byte count, duration, and
-remote address (respecting `X-Forwarded-For` / `X-Real-IP` headers).
-
-### Platform Notes
-
-- **FreeBSD / PF**: Requires `pfctl` and `tcpdump` with permission to read
-  `/var/log/pflog` and query PF state (`pfctl -s state`). The provider parses
-  actual PF rule counters, states, and recent pflog entries.
-  If either executable is missing from `PATH`, startup fails with an error.
-  Cross-compile from a Linux/macOS dev box with `make build-freebsd`
-  (`GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0`).
-- **Linux / nftables**: Requires `nft` and `conntrack` binaries. Rule counters
-  are read via `nft list ruleset -j`, and active flows via
-  `conntrack -L -o json`. If either executable is missing from `PATH`, startup
-  fails with an error. Feature coverage is intentionally behind PF.
-
-## Packaging & Services
-
-### GoReleaser + NFPM
-
-The repo ships with `.goreleaser.yaml`, which cross-compiles the dashboard,
-creates tarballs, and builds Debian/RPM packages via NFPM (systemd unit and
-config file included). Run snapshot builds locally:
+GoReleaser builds archives and Debian/RPM packages using the project’s systemd
+unit and sample environment file:
 
 ```bash
 goreleaser release --snapshot --clean
 ```
 
-Packaging artifacts land in `dist/`. Each `.deb`/`.rpm`:
-
-- installs the binary to `/usr/bin/pf-dashboard`
-- drops a sample env file at `/etc/default/pf-dashboard`
-- installs a systemd unit (`pf-dashboard.service`)
-- creates the `pf-dashboard` user/group via pre-install script
-
-Install + enable on a systemd host:
+Packages install the binary at `/usr/bin/pf-dashboard`, the service unit, and a
+sample environment file at `/etc/default/pf-dashboard`. After installation:
 
 ```bash
-sudo dpkg -i dist/pf-dashboard_*_amd64.deb # or rpm -i ...
 sudo systemctl daemon-reload
 sudo systemctl enable --now pf-dashboard
 ```
 
-Edit `/etc/default/pf-dashboard` (or `/etc/sysconfig/pf-dashboard`) to set
-`PFCTL_DASHBOARD_*` overrides before restarting the service.
+Set deployment-specific configuration in `/etc/default/pf-dashboard` or
+`/etc/sysconfig/pf-dashboard`, then restart the service.
 
-### FreeBSD rc.d Script
+### FreeBSD rc.d
 
-`packaging/freebsd/rc.d/pf_dashboard` is a ready-to-use `rc.d` helper. Install
-and enable it on FreeBSD hosts:
+Install the supplied rc.d script and enable the service:
 
 ```bash
 sudo install -m 0555 packaging/freebsd/rc.d/pf_dashboard /usr/local/etc/rc.d/pf_dashboard
@@ -245,26 +194,26 @@ sudo sysrc pf_dashboard_enable=YES
 sudo service pf_dashboard start
 ```
 
-Tunables:
+Use [packaging/freebsd/rc.conf.sample](packaging/freebsd/rc.conf.sample) as a
+starting point for service settings. The rc.d script supports command, flags,
+environment, user, and group overrides through `pf_dashboard_*` variables.
 
-- `pf_dashboard_command` – defaults to `/usr/local/sbin/pf-dashboard`
-- `pf_dashboard_flags` – pass CLI flags (e.g., `--firewall.backend=pf`)
-- `pf_dashboard_env` – space-separated `KEY=value` pairs exported before the
-  daemon starts
-- `pf_dashboard_user` / `pf_dashboard_group` – service account (default
-  `pf-dashboard`)
-- `packaging/freebsd/rc.conf.sample` provides a starting `rc.conf` snippet.
+### FreeBSD Ports
 
-### Linux systemd Unit
+A local port skeleton and `poudriere` workflow are documented in
+[docs/freebsd-porting.md](docs/freebsd-porting.md).
 
-Packaging includes:
+## API and Shell Completion
 
-- `packaging/systemd/pf-dashboard.service`
-- `packaging/config/pf-dashboard.env`
+The HTTP API is documented in [openapi.yaml](openapi.yaml). Key endpoints
+include traffic (`/api/blocked`, `/api/passed`, `/api/traffic`), rule counters
+(`/api/rules`), refresh configuration (`/api/config/refresh`), and the PF live
+traffic stream (`/api/stream/traffic`).
 
-The unit reads optional flags/env from `/etc/default/pf-dashboard` and
-`/etc/sysconfig/pf-dashboard`.
+Generate a shell completion script from the built binary:
 
-### FreeBSD Ports Packaging
-
-For a local ports skeleton and `poudriere` workflow, see `docs/freebsd-porting.md`.
+```bash
+./pf-dashboard completion bash > /etc/bash_completion.d/pf-dashboard
+./pf-dashboard completion zsh > "${fpath[1]}/_pf-dashboard"
+./pf-dashboard completion fish > ~/.config/fish/completions/pf-dashboard.fish
+```
