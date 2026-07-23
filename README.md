@@ -150,7 +150,24 @@ capabilities with `sudo setcap -r /path/to/pf-dashboard`.
 
 ### FreeBSD PF
 
-Configure access to PF and BPF devices in `/etc/devfs.conf`:
+The dashboard does not need to run as root. PF itself should still be enabled
+and configured by an administrator, while the dashboard runs as a dedicated
+unprivileged account.
+
+Create the account and add it to the PF access group:
+
+```sh
+sudo pw groupadd pf-dashboard
+sudo pw useradd pf-dashboard -g pf-dashboard -d /var/empty \
+  -s /usr/sbin/nologin
+sudo pw groupmod pf -m pf-dashboard
+```
+
+The `pf` group must exist on the system. If it does not, create an equivalent
+dedicated group first and use that group consistently in the device and log
+permissions below.
+
+Grant that group access to PF and BPF devices in `/etc/devfs.conf`:
 
 ```text
 perm pf 0660
@@ -159,8 +176,47 @@ own pf root:pf
 own bpf* root:pf
 ```
 
-Add the service account to the `pf` group, then apply the configuration with
-`service devfs restart`.
+Apply the device permissions and verify them:
+
+```sh
+sudo service devfs restart
+ls -l /dev/pf /dev/bpf*
+```
+
+The account also needs to read the pflog file. Start `pflogd`, then make sure
+the file is group-readable; repeat this after log rotation if your rotation
+configuration resets ownership:
+
+```sh
+sudo sysrc pf_enable=YES
+sudo sysrc pflog_enable=YES
+sudo service pflog start
+sudo chgrp pf /var/log/pflog
+sudo chmod 0640 /var/log/pflog
+sudo -u pf-dashboard pfctl -s state
+sudo -u pf-dashboard tcpdump -n -e -tttt -r /var/log/pflog -c 1
+```
+
+Use `pf_dashboard_user` and `pf_dashboard_group` in the supplied rc.d script:
+
+```sh
+sudo install -m 0555 packaging/freebsd/rc.d/pf_dashboard \
+  /usr/local/etc/rc.d/pf_dashboard
+sudo sysrc pf_dashboard_enable=YES
+sudo sysrc pf_dashboard_user=pf-dashboard
+sudo sysrc pf_dashboard_group=pf-dashboard
+sudo sysrc pf_dashboard_flags='--server.addr=127.0.0.1:8080 --firewall.backend=pf'
+sudo service pf_dashboard start
+```
+
+For access from another host, bind to the required interface instead of
+`127.0.0.1`, and put authentication or a reverse proxy in front of the
+dashboard.
+
+Blocked traffic is available only for PF rules that include the `log` option,
+for example `block log all`, and while `pflogd` is running. A plain `block all`
+rule will block packets but will not produce entries for the dashboard to
+display.
 
 ## Deployment and Packaging
 
