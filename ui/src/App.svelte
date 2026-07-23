@@ -98,6 +98,12 @@ let combinedStreamTask: Promise<void> | null = null;
   let rulesError: string | null = null;
   let rulesLastUpdated: Date | null = null;
   let rulesLoaded = false;
+  let ruleSearch = "";
+  let ruleLabelFilter = "";
+  let ruleIdFilter = "";
+  let evaluationsFilter = "";
+  let packetsFilter = "";
+  let bytesFilter = "";
 
   $: currentLoading =
     activePage === "traffic"
@@ -346,7 +352,20 @@ function packetKey(entry: PacketLogEntry): string {
     if (action === "block") return showCombinedBlock;
     return true;
   });
-  $: rulesView = sortRulesView(rules, rulesSort);
+  $: rulesView = sortRulesView(
+    rules.filter((rule) => {
+      const search = ruleSearch.trim();
+      return (
+        (!search || fuzzyMatch(`${rule.ruleLabel} ${rule.ruleId}`, search)) &&
+        (!ruleLabelFilter.trim() || fuzzyMatch(rule.ruleLabel, ruleLabelFilter)) &&
+        matchesNumberFilter(rule.ruleId, ruleIdFilter) &&
+        matchesNumberFilter(rule.evaluations, evaluationsFilter) &&
+        matchesNumberFilter(rule.packets, packetsFilter) &&
+        matchesNumberFilter(rule.bytes, bytesFilter)
+      );
+    }),
+    rulesSort,
+  );
 
   function updateSort<C extends string>(state: SortState<C>, column: C): SortState<C> {
     if (state.column === column) {
@@ -369,6 +388,40 @@ function packetKey(entry: PacketLogEntry): string {
 
   function toggleRulesSort(column: RuleColumn) {
     rulesSort = updateSort(rulesSort, column);
+  }
+
+  function fuzzyMatch(value: string, query: string): boolean {
+    const normalizedValue = value.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const normalizedQuery = query.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!normalizedQuery) return true;
+    let queryIndex = 0;
+    for (const character of normalizedValue) {
+      if (character === normalizedQuery[queryIndex]) queryIndex += 1;
+      if (queryIndex === normalizedQuery.length) return true;
+    }
+    return false;
+  }
+
+  function matchesNumberFilter(value: number, filter: string): boolean {
+    const match = filter.trim().match(/^(>=|<=|>|<|=)?\s*([\d,]+(?:\.\d+)?)$/);
+    if (!match) return filter.trim() === "";
+    const target = Number(match[2].replace(/,/g, ""));
+    switch (match[1] ?? "=") {
+      case ">=": return value >= target;
+      case "<=": return value <= target;
+      case ">": return value > target;
+      case "<": return value < target;
+      default: return value === target;
+    }
+  }
+
+  function clearRuleFilters() {
+    ruleSearch = "";
+    ruleLabelFilter = "";
+    ruleIdFilter = "";
+    evaluationsFilter = "";
+    packetsFilter = "";
+    bytesFilter = "";
   }
 
   function sortIndicator<C extends string>(state: SortState<C>, column: C): string {
@@ -1121,8 +1174,23 @@ function packetKey(entry: PacketLogEntry): string {
       <div class="flex items-center justify-between pb-4">
         <h2 class="text-lg font-semibold text-slate-100">Rule Counters</h2>
         <span class="text-xs text-slate-400">
-          {rules.length} rules
+          {rulesView.length}{rulesView.length !== rules.length ? ` of ${rules.length}` : ""} rules
         </span>
+      </div>
+      <div class="mb-4 flex flex-wrap items-center gap-2">
+        <label class="sr-only" for="rule-search">Search rules</label>
+        <input
+          id="rule-search"
+          class="min-w-64 flex-1 rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus:border-cyan-400 focus:outline-none"
+          type="search"
+          bind:value={ruleSearch}
+          placeholder="Fuzzy search rule name or number"
+        />
+        {#if ruleSearch || ruleLabelFilter || ruleIdFilter || evaluationsFilter || packetsFilter || bytesFilter}
+          <button type="button" class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:border-cyan-400 hover:text-cyan-300" on:click={clearRuleFilters}>
+            Clear filters
+          </button>
+        {/if}
       </div>
       <div class="overflow-x-auto">
         <table class="min-w-full divide-y divide-slate-800 text-sm">
@@ -1131,6 +1199,11 @@ function packetKey(entry: PacketLogEntry): string {
               <th class="py-2 pr-4">
                 <button type="button" class="flex items-center gap-1" on:click={() => toggleRulesSort("ruleLabel")}>
                   Rule <span>{sortIndicator(rulesSort, "ruleLabel")}</span>
+                </button>
+              </th>
+              <th class="py-2 pr-4">
+                <button type="button" class="flex items-center gap-1" on:click={() => toggleRulesSort("ruleId")}>
+                  Rule # <span>{sortIndicator(rulesSort, "ruleId")}</span>
                 </button>
               </th>
               <th class="py-2 pr-4">
@@ -1149,11 +1222,33 @@ function packetKey(entry: PacketLogEntry): string {
                 </button>
               </th>
             </tr>
+            <tr class="text-left">
+              <th class="py-2 pr-4">
+                <label class="sr-only" for="rule-label-filter">Filter rule names</label>
+                <input id="rule-label-filter" class="w-full min-w-40 rounded border border-slate-800 bg-slate-950/50 px-2 py-1 text-xs text-slate-300 placeholder:text-slate-600 focus:border-cyan-400 focus:outline-none" type="text" bind:value={ruleLabelFilter} placeholder="Filter name" />
+              </th>
+              <th class="py-2 pr-4">
+                <label class="sr-only" for="rule-id-filter">Filter rule numbers</label>
+                <input id="rule-id-filter" class="w-24 rounded border border-slate-800 bg-slate-950/50 px-2 py-1 text-xs text-slate-300 placeholder:text-slate-600 focus:border-cyan-400 focus:outline-none" type="text" bind:value={ruleIdFilter} placeholder="e.g. >= 10" />
+              </th>
+              <th class="py-2 pr-4">
+                <label class="sr-only" for="evaluations-filter">Filter evaluations</label>
+                <input id="evaluations-filter" class="w-28 rounded border border-slate-800 bg-slate-950/50 px-2 py-1 text-xs text-slate-300 placeholder:text-slate-600 focus:border-cyan-400 focus:outline-none" type="text" bind:value={evaluationsFilter} placeholder=">= 100" />
+              </th>
+              <th class="py-2 pr-4">
+                <label class="sr-only" for="packets-filter">Filter packets</label>
+                <input id="packets-filter" class="w-24 rounded border border-slate-800 bg-slate-950/50 px-2 py-1 text-xs text-slate-300 placeholder:text-slate-600 focus:border-cyan-400 focus:outline-none" type="text" bind:value={packetsFilter} placeholder=">= 10" />
+              </th>
+              <th class="py-2 pr-4">
+                <label class="sr-only" for="bytes-filter">Filter bytes</label>
+                <input id="bytes-filter" class="w-24 rounded border border-slate-800 bg-slate-950/50 px-2 py-1 text-xs text-slate-300 placeholder:text-slate-600 focus:border-cyan-400 focus:outline-none" type="text" bind:value={bytesFilter} placeholder=">= 1000" />
+              </th>
+            </tr>
           </thead>
           <tbody class="divide-y divide-slate-900/60 text-slate-200">
             {#if rulesView.length === 0}
               <tr>
-                <td colspan="4" class="py-6 text-center text-sm text-slate-500">
+                <td colspan="5" class="py-6 text-center text-sm text-slate-500">
                   {#if rulesLoading}
                     Loading rule counters…
                   {:else}
@@ -1166,7 +1261,9 @@ function packetKey(entry: PacketLogEntry): string {
                 <tr class="hover:bg-slate-800/40">
                   <td class="py-3 pr-4">
                     <div class="font-medium text-slate-100">{rule?.ruleLabel ?? "Unnamed rule"}</div>
-                    <div class="text-xs text-slate-500">ID #{rule?.ruleId ?? "—"}</div>
+                  </td>
+                  <td class="py-3 pr-4 font-mono text-xs text-slate-300">
+                    {rule?.ruleId ?? "—"}
                   </td>
                   <td class="py-3 pr-4 font-mono text-xs text-slate-300">
                     {(rule?.evaluations ?? 0).toLocaleString()}

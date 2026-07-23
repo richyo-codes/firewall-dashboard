@@ -34,6 +34,17 @@ func parsePflogOutput(out []byte) []firewall.PacketLogEntry {
 	return entries
 }
 
+func filterPflogAction(entries []firewall.PacketLogEntry, action string) []firewall.PacketLogEntry {
+	action = strings.ToLower(strings.TrimSpace(action))
+	filtered := make([]firewall.PacketLogEntry, 0, len(entries))
+	for _, entry := range entries {
+		if strings.ToLower(strings.TrimSpace(entry.Action)) == action {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
 func parsePflogLine(line string) (firewall.PacketLogEntry, bool) {
 	matches := pflogLineRegex.FindStringSubmatch(line)
 	if matches == nil {

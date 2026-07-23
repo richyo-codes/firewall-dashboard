@@ -47,7 +47,7 @@ func (p *provider) BlockedTraffic(ctx context.Context) ([]firewall.PacketLogEntr
 	if err != nil {
 		return nil, fmt.Errorf("pflog capture: %w", err)
 	}
-	return parsePflogOutput(out), nil
+	return filterPflogAction(parsePflogOutput(out), "block"), nil
 }
 
 func (p *provider) PassedTraffic(ctx context.Context) ([]firewall.PacketLogEntry, error) {

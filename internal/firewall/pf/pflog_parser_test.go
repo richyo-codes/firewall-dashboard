@@ -1,8 +1,11 @@
 package pf
 
 import (
+	"strings"
 	"testing"
 	"time"
+
+	"pfctl-golang/internal/firewall"
 )
 
 func TestParsePflogLine(t *testing.T) {
@@ -72,6 +75,24 @@ func TestParsePflogLine(t *testing.T) {
 func TestParsePflogLine_Invalid(t *testing.T) {
 	if _, ok := parsePflogLine("not a pflog line"); ok {
 		t.Fatalf("expected parse failure")
+	}
+}
+
+func TestFilterPflogAction(t *testing.T) {
+	entries := []firewall.PacketLogEntry{
+		{Action: "pass"},
+		{Action: "block"},
+		{Action: "BLOCK"},
+	}
+
+	got := filterPflogAction(entries, "block")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 blocked entries, got %d", len(got))
+	}
+	for _, entry := range got {
+		if strings.ToLower(entry.Action) != "block" {
+			t.Errorf("unexpected action %q", entry.Action)
+		}
 	}
 }
 
