@@ -7,10 +7,12 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -30,6 +32,28 @@ type oidcManager struct {
 	cookieSecure  bool
 	cookieDomain  string
 	defaultScopes []string
+	mu            sync.Mutex
+	logins        map[string]loginTransaction
+	sessions      map[string]session
+}
+
+const (
+	loginLifetime = 5 * time.Minute
+	maxLogins     = 256
+	maxSessions   = 1024
+)
+
+var errNotAuthorized = errors.New("identity is not authorized")
+
+type loginTransaction struct {
+	verifier string
+	redirect string
+	expires  time.Time
+}
+
+type session struct {
+	user    User
+	expires time.Time
 }
 
 func newOIDCManager(ctx context.Context, cfg config.OIDCConfig, logger Logger) (*Manager, error) {
@@ -75,6 +99,8 @@ func newOIDCManager(ctx context.Context, cfg config.OIDCConfig, logger Logger) (
 		cookieSecure:  cfg.CookieSecure,
 		cookieDomain:  cfg.CookieDomain,
 		defaultScopes: scopes,
+		logins:        make(map[string]loginTransaction),
+		sessions:      make(map[string]session),
 	}
 
 	mgr := &Manager{
@@ -110,13 +136,30 @@ func (o *oidcManager) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-
-	http.SetCookie(w, o.makeCookie(o.stateCookie, state, 5*time.Minute))
-
-	authURL := o.oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline)
-	if redirect := r.URL.Query().Get("redirect"); redirect != "" {
-		authURL = addQueryParam(authURL, "redirect", redirect)
+	verifier, err := randomString(32)
+	if err != nil {
+		o.logger.Printf("failed to generate pkce verifier: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
 	}
+
+	redirect := safeRedirect(r.URL.Query().Get("redirect"))
+	o.mu.Lock()
+	o.pruneLocked(time.Now())
+	if len(o.logins) >= maxLogins {
+		o.mu.Unlock()
+		http.Error(w, "too many login attempts", http.StatusTooManyRequests)
+		return
+	}
+	o.logins[state] = loginTransaction{
+		verifier: verifier,
+		redirect: redirect,
+		expires:  time.Now().Add(loginLifetime),
+	}
+	o.mu.Unlock()
+
+	http.SetCookie(w, o.makeCookie(o.stateCookie, state, loginLifetime))
+	authURL := o.oauthConfig.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier))
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
@@ -136,6 +179,14 @@ func (o *oidcManager) handleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid state", http.StatusBadRequest)
 		return
 	}
+	o.mu.Lock()
+	transaction, ok := o.logins[stateParam]
+	delete(o.logins, stateParam)
+	o.mu.Unlock()
+	if !ok || time.Now().After(transaction.expires) {
+		http.Error(w, "expired state", http.StatusBadRequest)
+		return
+	}
 
 	code := r.URL.Query().Get("code")
 	if code == "" {
@@ -143,7 +194,9 @@ func (o *oidcManager) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := o.oauthConfig.Exchange(r.Context(), code)
+	callbackContext, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	token, err := o.oauthConfig.Exchange(callbackContext, code, oauth2.VerifierOption(transaction.verifier))
 	if err != nil {
 		o.logger.Printf("oauth exchange failed: %v", err)
 		http.Error(w, "oauth exchange failed", http.StatusBadGateway)
@@ -156,24 +209,44 @@ func (o *oidcManager) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := o.verifyToken(r.Context(), rawIDToken)
+	user, err := o.verifyToken(callbackContext, rawIDToken)
 	if err != nil {
 		o.logger.Printf("id token verification failed: %v", err)
-		http.Error(w, "invalid id token", http.StatusUnauthorized)
+		status := http.StatusUnauthorized
+		if errors.Is(err, errNotAuthorized) {
+			status = http.StatusForbidden
+		}
+		http.Error(w, "identity not accepted", status)
 		return
 	}
 
-	http.SetCookie(w, o.sessionCookie(rawIDToken, user.Expires))
-	http.SetCookie(w, o.makeCookie(o.stateCookie, "", -time.Hour))
-
-	redirect := r.URL.Query().Get("redirect")
-	if redirect == "" {
-		redirect = "/"
+	sessionID, err := randomString(32)
+	if err != nil {
+		o.logger.Printf("failed to generate session id: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
 	}
-	http.Redirect(w, r, redirect, http.StatusFound)
+	o.mu.Lock()
+	o.pruneLocked(time.Now())
+	if len(o.sessions) >= maxSessions {
+		o.mu.Unlock()
+		http.Error(w, "session limit reached", http.StatusServiceUnavailable)
+		return
+	}
+	o.sessions[sessionID] = session{user: *user, expires: user.Expires}
+	o.mu.Unlock()
+
+	http.SetCookie(w, o.sessionCookie(sessionID, user.Expires))
+	http.SetCookie(w, o.makeCookie(o.stateCookie, "", -time.Hour))
+	http.Redirect(w, r, transaction.redirect, http.StatusFound)
 }
 
 func (o *oidcManager) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(o.cookieName); err == nil {
+		o.mu.Lock()
+		delete(o.sessions, cookie.Value)
+		o.mu.Unlock()
+	}
 	http.SetCookie(w, o.sessionCookie("", time.Unix(0, 0)))
 	http.SetCookie(w, o.makeCookie(o.stateCookie, "", -time.Hour))
 	w.WriteHeader(http.StatusNoContent)
@@ -196,12 +269,16 @@ func (o *oidcManager) authenticate(r *http.Request) (*User, bool) {
 	if err != nil || cookie.Value == "" {
 		return nil, false
 	}
-	user, err := o.verifyToken(r.Context(), cookie.Value)
-	if err != nil {
-		o.logger.Printf("token verification failed: %v", err)
+	now := time.Now()
+	o.mu.Lock()
+	o.pruneLocked(now)
+	session, ok := o.sessions[cookie.Value]
+	o.mu.Unlock()
+	if !ok || now.After(session.expires) {
 		return nil, false
 	}
-	return user, true
+	user := session.user
+	return &user, true
 }
 
 func (o *oidcManager) verifyToken(ctx context.Context, raw string) (*User, error) {
@@ -211,10 +288,11 @@ func (o *oidcManager) verifyToken(ctx context.Context, raw string) (*User, error
 	}
 
 	var claims struct {
-		Email             string `json:"email"`
-		EmailVerified     bool   `json:"email_verified"`
-		Name              string `json:"name"`
-		PreferredUsername string `json:"preferred_username"`
+		Email             string   `json:"email"`
+		EmailVerified     bool     `json:"email_verified"`
+		Name              string   `json:"name"`
+		PreferredUsername string   `json:"preferred_username"`
+		Groups            []string `json:"groups"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		return nil, err
@@ -226,8 +304,11 @@ func (o *oidcManager) verifyToken(ctx context.Context, raw string) (*User, error
 	}
 
 	email := ""
-	if claims.EmailVerified || claims.Email != "" {
+	if claims.EmailVerified {
 		email = claims.Email
+	}
+	if !o.authorized(idToken.Subject, email, claims.Groups) {
+		return nil, errNotAuthorized
 	}
 
 	return &User{
@@ -269,6 +350,35 @@ func (o *oidcManager) sessionCookie(value string, expiry time.Time) *http.Cookie
 	return o.makeCookie(o.cookieName, value, lifetime)
 }
 
+func (o *oidcManager) authorized(subject, verifiedEmail string, groups []string) bool {
+	if len(o.cfg.AllowedSubjects) > 0 && !containsFold(o.cfg.AllowedSubjects, subject) {
+		return false
+	}
+	if len(o.cfg.AllowedGroups) > 0 && !intersectsFold(o.cfg.AllowedGroups, groups) {
+		return false
+	}
+	if len(o.cfg.AllowedEmailDomains) > 0 {
+		at := strings.LastIndex(verifiedEmail, "@")
+		if at < 0 || !containsFold(o.cfg.AllowedEmailDomains, verifiedEmail[at+1:]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (o *oidcManager) pruneLocked(now time.Time) {
+	for state, transaction := range o.logins {
+		if now.After(transaction.expires) {
+			delete(o.logins, state)
+		}
+	}
+	for id, session := range o.sessions {
+		if now.After(session.expires) {
+			delete(o.sessions, id)
+		}
+	}
+}
+
 func randomString(length int) (string, error) {
 	buf := make([]byte, length)
 	if _, err := rand.Read(buf); err != nil {
@@ -286,13 +396,31 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func addQueryParam(uri, key, value string) string {
-	parsed, err := url.Parse(uri)
-	if err != nil {
-		return uri
+func safeRedirect(value string) string {
+	if value == "" {
+		return "/"
 	}
-	q := parsed.Query()
-	q.Set(key, value)
-	parsed.RawQuery = q.Encode()
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.IsAbs() || parsed.Host != "" || !strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") || strings.Contains(parsed.Path, "\\") {
+		return "/"
+	}
 	return parsed.String()
+}
+
+func containsFold(values []string, candidate string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(candidate)) {
+			return true
+		}
+	}
+	return false
+}
+
+func intersectsFold(allowed, actual []string) bool {
+	for _, candidate := range actual {
+		if containsFold(allowed, candidate) {
+			return true
+		}
+	}
+	return false
 }

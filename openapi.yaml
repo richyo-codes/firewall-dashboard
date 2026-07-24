@@ -41,7 +41,7 @@ paths:
           name: redirect
           schema:
             type: string
-          description: Optional post-login redirect path.
+          description: Optional same-origin post-login path. External URLs are rejected.
       responses:
         '302':
           description: Redirect to OIDC provider
@@ -67,10 +67,6 @@ paths:
           name: code
           schema:
             type: string
-        - in: query
-          name: redirect
-          schema:
-            type: string
       responses:
         '302':
           description: Login completed and redirected
@@ -82,6 +78,12 @@ paths:
                 type: string
         '401':
           description: Invalid ID token
+          content:
+            text/plain:
+              schema:
+                type: string
+        '403':
+          description: Identity does not satisfy configured authorization constraints
           content:
             text/plain:
               schema:
@@ -100,12 +102,6 @@ paths:
                 type: string
 
   /auth/logout:
-    get:
-      tags: [Auth]
-      summary: Logout current session
-      responses:
-        '204':
-          description: Session cleared
     post:
       tags: [Auth]
       summary: Logout current session
@@ -251,6 +247,12 @@ paths:
                 type: string
         '501':
           description: Streaming not supported for backend
+          content:
+            text/plain:
+              schema:
+                type: string
+        '429':
+          description: Concurrent stream limit reached
           content:
             text/plain:
               schema:

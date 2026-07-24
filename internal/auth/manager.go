@@ -59,13 +59,13 @@ func (m *Manager) Wrap(next http.Handler) http.Handler {
 // RegisterPublicRoutes exposes login/logout/callback endpoints when enabled.
 func (m *Manager) RegisterPublicRoutes(mux *http.ServeMux) {
 	if m.login != nil {
-		mux.Handle("/auth/login", m.login)
+		mux.Handle("GET /auth/login", m.login)
 	}
 	if m.callback != nil {
-		mux.Handle("/auth/callback", m.callback)
+		mux.Handle("GET /auth/callback", m.callback)
 	}
 	if m.logout != nil {
-		mux.Handle("/auth/logout", m.logout)
+		mux.Handle("POST /auth/logout", m.logout)
 	}
 }
 

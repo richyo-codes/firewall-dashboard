@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path"
 	"sort"
@@ -61,8 +62,16 @@ func main() {
 	if err != nil {
 		logger.Fatalf("failed to initialize firewall backend: %v", err)
 	}
+	provider = firewall.NewControlledProvider(provider, firewall.ControlOptions{
+		CacheTTL:              time.Duration(cfg.Firewall.CacheTTLms) * time.Millisecond,
+		CommandTimeout:        time.Duration(cfg.Firewall.CommandTimeoutMs) * time.Millisecond,
+		MaxConcurrentCommands: cfg.Firewall.MaxConcurrentCommands,
+		MaxStreams:            cfg.Firewall.MaxStreams,
+	})
 
-	authManager, err := auth.NewManager(context.Background(), cfg.Auth, logger)
+	authContext, cancelAuth := context.WithTimeout(context.Background(), 15*time.Second)
+	authManager, err := auth.NewManager(authContext, cfg.Auth, logger)
+	cancelAuth()
 	if err != nil {
 		logger.Fatalf("failed to configure authentication: %v", err)
 	}
@@ -76,49 +85,71 @@ func main() {
 	}
 
 	apiMux := http.NewServeMux()
-	apiMux.Handle("/api/blocked", withJSON(logger, srv.blockedTraffic))
-	apiMux.Handle("/api/passed", withJSON(logger, srv.passedTraffic))
-	apiMux.Handle("/api/traffic", withJSON(logger, srv.combinedTraffic))
-	apiMux.Handle("/api/rules", withJSON(logger, srv.ruleCounters))
-	apiMux.Handle("/api/stream/traffic", http.HandlerFunc(srv.streamTraffic))
+	apiMux.Handle("GET /api/blocked", withJSON(logger, srv.blockedTraffic))
+	apiMux.Handle("GET /api/passed", withJSON(logger, srv.passedTraffic))
+	apiMux.Handle("GET /api/traffic", withJSON(logger, srv.combinedTraffic))
+	apiMux.Handle("GET /api/rules", withJSON(logger, srv.ruleCounters))
+	apiMux.Handle("GET /api/stream/traffic", http.HandlerFunc(srv.streamTraffic))
 
 	mux := http.NewServeMux()
 	authManager.RegisterPublicRoutes(mux)
-	mux.Handle("/api/auth/me", authManager.StatusHandler())
-	mux.Handle("/api/config/refresh", withJSON(logger, srv.refreshConfig))
-	mux.Handle("/api/", authManager.Wrap(apiMux))
+	mux.Handle("GET /api/auth/me", authManager.StatusHandler())
+	mux.Handle("GET /api/config/refresh", withJSON(logger, srv.refreshConfig))
+	mux.Handle("GET /api/", authManager.Wrap(apiMux))
 
 	uiRoot, err := fs.Sub(uiDist, "ui/dist")
 	if err != nil {
 		logger.Printf("ui assets missing: %v", err)
-		mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.Handle("GET /", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "frontend assets not bundled", http.StatusNotFound)
 		}))
 	} else if !fileExists(uiRoot, "index.html") {
 		logger.Printf("ui assets missing: index.html not found in embedded bundle")
-		mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.Handle("GET /", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "frontend assets not bundled", http.StatusNotFound)
 		}))
 	} else {
-		mux.Handle("/", spaHandler(uiRoot))
+		mux.Handle("GET /", spaHandler(uiRoot))
 	}
 
 	flagSet.Visit(func(f *pflag.Flag) {
-		logger.Printf("flag %s=%s", f.Name, f.Value)
+		logger.Printf("flag %s=%s", f.Name, safeFlagValue(f))
 	})
 
 	addr := cfg.Server.Addr
 	logger.Printf("serving dashboard on %s using %s backend", addr, resolvedBackend)
 	logger.Printf("open %s", launchURL(addr))
 
-	var handler http.Handler = mux
-	if cfg.Server.HTTPLog {
-		handler = logRequests(logger, handler)
+	trustedProxies, err := newTrustedProxies(cfg.Server.TrustedProxies)
+	if err != nil {
+		logger.Fatalf("invalid trusted proxy configuration: %v", err)
 	}
 
-	if err := http.ListenAndServe(addr, handler); err != nil {
+	var handler http.Handler = securityHeaders(mux)
+	if cfg.Server.HTTPLog {
+		handler = logRequests(logger, trustedProxies, handler)
+	}
+
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+		// Traffic streams are long-lived, so a global WriteTimeout is unsuitable.
+	}
+	if err := httpServer.ListenAndServe(); err != nil {
 		logger.Fatalf("server error: %v", err)
 	}
+}
+
+func safeFlagValue(flag *pflag.Flag) string {
+	name := strings.ToLower(flag.Name)
+	if strings.Contains(name, "secret") || strings.Contains(name, "password") || strings.Contains(name, "token") {
+		return "[REDACTED]"
+	}
+	return flag.Value.String()
 }
 
 func spaHandler(root fs.FS) http.Handler {
@@ -163,13 +194,24 @@ func fileExists(root fs.FS, name string) bool {
 	return true
 }
 
-func logRequests(logger *log.Logger, next http.Handler) http.Handler {
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func logRequests(logger *log.Logger, trusted trustedProxies, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		writer := &responseRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(writer, r)
 		duration := time.Since(start)
-		logger.Printf("%s %s %d %dB %s remote=%s", r.Method, r.URL.Path, writer.status, writer.bytes, duration.Truncate(time.Millisecond), remoteAddr(r))
+		logger.Printf("%s %s %d %dB %s remote=%s", r.Method, r.URL.Path, writer.status, writer.bytes, duration.Truncate(time.Millisecond), trusted.remoteAddr(r))
 	})
 }
 
@@ -190,15 +232,64 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
-func remoteAddr(r *http.Request) string {
-	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
-		parts := strings.Split(ip, ",")
-		return strings.TrimSpace(parts[0])
+func (r *responseRecorder) Flush() {
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
 	}
-	if ip := r.Header.Get("X-Real-IP"); ip != "" {
-		return strings.TrimSpace(ip)
+}
+
+type trustedProxies []netip.Prefix
+
+func newTrustedProxies(values []string) (trustedProxies, error) {
+	proxies := make(trustedProxies, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			addr, addrErr := netip.ParseAddr(value)
+			if addrErr != nil {
+				return nil, fmt.Errorf("%q is not an IP address or CIDR", value)
+			}
+			prefix = netip.PrefixFrom(addr, addr.BitLen())
+		}
+		proxies = append(proxies, prefix)
 	}
-	return r.RemoteAddr
+	return proxies, nil
+}
+
+func (t trustedProxies) contains(addr netip.Addr) bool {
+	for _, prefix := range t {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func (t trustedProxies) remoteAddr(r *http.Request) string {
+	peerText, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		peerText = r.RemoteAddr
+	}
+	peer, err := netip.ParseAddr(strings.TrimSpace(peerText))
+	if err != nil || !t.contains(peer) {
+		return r.RemoteAddr
+	}
+
+	forwarded := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(forwarded) - 1; i >= 0; i-- {
+		addr, parseErr := netip.ParseAddr(strings.TrimSpace(forwarded[i]))
+		if parseErr == nil && !t.contains(addr) {
+			return addr.String()
+		}
+	}
+	if addr, parseErr := netip.ParseAddr(strings.TrimSpace(r.Header.Get("X-Real-IP"))); parseErr == nil {
+		return addr.String()
+	}
+	return peer.String()
 }
 
 func launchURL(addr string) string {
@@ -247,7 +338,7 @@ func withJSON(logger *log.Logger, handler apiHandler) http.Handler {
 				w.WriteHeader(http.StatusInternalServerError)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]string{
-				"error": err.Error(),
+				"error": "backend request failed",
 			})
 			return
 		}
@@ -331,6 +422,10 @@ func (s *server) streamTraffic(w http.ResponseWriter, r *http.Request) {
 	rc, err := streamer.StreamTraffic(r.Context(), action)
 	if err != nil {
 		s.logger.Printf("stream traffic error: %v", err)
+		if errors.Is(err, firewall.ErrBusy) {
+			http.Error(w, "stream limit reached", http.StatusTooManyRequests)
+			return
+		}
 		http.Error(w, "unable to start stream", http.StatusInternalServerError)
 		return
 	}

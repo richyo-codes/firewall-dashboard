@@ -1,11 +1,11 @@
-FROM node:20-alpine AS ui-build
+FROM node:22-alpine AS ui-build
 WORKDIR /app/ui
 COPY ui/package*.json ./
-RUN npm install
+RUN npm ci
 COPY ui/ .
 RUN npm run build
 
-FROM golang:1.22-alpine AS base
+FROM golang:1.25-alpine AS base
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -18,7 +18,7 @@ RUN go test ./...
 FROM base AS build
 RUN GOOS=linux GOARCH=amd64 go build -o pf-dashboard
 
-FROM alpine:3.20 AS release
+FROM alpine:3.23 AS release
 RUN adduser -D appuser
 WORKDIR /app
 COPY --from=build /app/pf-dashboard .

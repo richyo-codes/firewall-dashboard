@@ -16,7 +16,6 @@ GH_ACCOUNT=	REPLACE_ME
 GH_PROJECT=	REPLACE_ME
 
 GO_TARGET=	.
-PLIST_FILES=	sbin/pf-dashboard
 
 post-install:
 	${INSTALL_PROGRAM} ${WRKDIR}/bin/pf-dashboard ${STAGEDIR}${PREFIX}/sbin/pf-dashboard

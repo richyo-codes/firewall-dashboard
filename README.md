@@ -106,6 +106,15 @@ PFCTL_DASHBOARD_FIREWALL_BACKEND=nftables ./pf-dashboard
 
 # Enable HTTP request logging.
 ./pf-dashboard --server.http_log
+
+# Trust forwarded client IP headers from a reverse proxy.
+./pf-dashboard --server.trusted_proxies=127.0.0.1/32
+
+# Tune backend resource limits.
+./pf-dashboard --firewall.cache_ttl_ms=1000 \
+  --firewall.command_timeout_ms=5000 \
+  --firewall.max_concurrent_commands=2 \
+  --firewall.max_streams=4
 ```
 
 ## Authentication
@@ -127,7 +136,23 @@ PFCTL_DASHBOARD_AUTH_OIDC_REDIRECT_URL=https://dashboard.example.com/auth/callba
 ```
 
 The required OIDC settings are the provider URL, client ID, client secret, and
-redirect URL. Optional settings include scopes and session-cookie controls.
+redirect URL. The login flow uses PKCE and stores only an opaque session ID in
+the browser. Sessions are held in memory and are cleared when the process
+restarts.
+
+Optional authorization constraints can require an exact subject ID, membership
+in at least one configured group, and/or a verified email from an allowed
+domain. When more than one constraint type is configured, all configured types
+must match:
+
+```bash
+PFCTL_DASHBOARD_AUTH_OIDC_ALLOWED_SUBJECTS=user-id-1,user-id-2
+PFCTL_DASHBOARD_AUTH_OIDC_ALLOWED_GROUPS=firewall-admins,network-operators
+PFCTL_DASHBOARD_AUTH_OIDC_ALLOWED_EMAIL_DOMAINS=example.com
+```
+
+Optional settings also include scopes and session-cookie controls. Post-login
+redirects are restricted to paths on the dashboard origin.
 
 When OIDC is enabled, the application provides `/auth/login`, `/auth/callback`,
 and `/auth/logout`. Authentication status is available at `/api/auth/me`.
