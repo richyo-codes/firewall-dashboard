@@ -1,0 +1,14 @@
+[server]
+addr = "127.0.0.1:8080"
+
+[firewall]
+backend = "pf"
+
+[firewall.pf]
+blocked_source = "auto"
+pflog_interface = "pflog0"
+pflog_path = "/var/log/pflog"
+
+[vnstat]
+# enabled = true
+# interface = "em0"

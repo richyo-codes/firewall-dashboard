@@ -42,7 +42,15 @@ type server struct {
 }
 
 func main() {
-	handled, err := maybeHandleCompletion(os.Args[1:], os.Stdout, os.Stderr)
+	handled, err := maybeHandleRCD(os.Args[1:], os.Stdout, os.Stderr)
+	if handled {
+		if err != nil {
+			os.Exit(1)
+		}
+		return
+	}
+
+	handled, err = maybeHandleCompletion(os.Args[1:], os.Stdout, os.Stderr)
 	if handled {
 		if err != nil {
 			os.Exit(1)

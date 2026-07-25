@@ -5,8 +5,10 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/knadh/koanf/parsers/toml"
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/providers/env"
+	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/providers/posflag"
 	"github.com/knadh/koanf/v2"
 	"github.com/spf13/pflag"
@@ -86,8 +88,12 @@ type OIDCConfig struct {
 }
 
 // Load builds the configuration using koanf with the following precedence:
-// defaults < environment variables < CLI flags.
+// defaults < TOML file < environment variables < CLI flags.
 func Load(args []string) (*Config, *pflag.FlagSet, error) {
+	configPath, err := configFilePath(args)
+	if err != nil {
+		return nil, nil, err
+	}
 	k := koanf.New(configDelim)
 
 	defaults := map[string]any{
@@ -124,8 +130,14 @@ func Load(args []string) (*Config, *pflag.FlagSet, error) {
 	if err := k.Load(confmap.Provider(defaults, configDelim), nil); err != nil {
 		return nil, nil, fmt.Errorf("load defaults: %w", err)
 	}
+	if configPath != "" {
+		if err := k.Load(file.Provider(configPath), toml.Parser()); err != nil {
+			return nil, nil, fmt.Errorf("load config file %q: %w", configPath, err)
+		}
+	}
 
 	flagSet := pflag.NewFlagSet("pfctl-dashboard", pflag.ContinueOnError)
+	flagSet.String("config", configPath, "path to TOML configuration file")
 	flagSet.String("server.addr", defaults["server.addr"].(string), "address to bind the HTTP server")
 	flagSet.Bool("server.http_log", defaults["server.http_log"].(bool), "enable request logging")
 	flagSet.StringSlice("server.trusted_proxies", defaults["server.trusted_proxies"].([]string), "trusted reverse-proxy IPs or CIDRs")
@@ -243,6 +255,24 @@ func envKeyFormatter(key string) string {
 	}
 	key = strings.ReplaceAll(strings.ToLower(key), "_", configDelim)
 	return key
+}
+
+func configFilePath(args []string) (string, error) {
+	for i, arg := range args {
+		if arg == "--config" {
+			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
+				return "", fmt.Errorf("--config requires a TOML file path")
+			}
+			return strings.TrimSpace(args[i+1]), nil
+		}
+		if value, ok := strings.CutPrefix(arg, "--config="); ok {
+			if strings.TrimSpace(value) == "" {
+				return "", fmt.Errorf("--config requires a TOML file path")
+			}
+			return strings.TrimSpace(value), nil
+		}
+	}
+	return "", nil
 }
 
 var envKeyMappings = map[string]string{

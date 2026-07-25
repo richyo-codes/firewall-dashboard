@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestLoadSecurityAndResourceControls(t *testing.T) {
 	t.Setenv("PFCTL_DASHBOARD_SERVER_TRUSTED_PROXIES", "127.0.0.1/32,10.0.0.0/8")
@@ -32,5 +36,31 @@ func TestLoadPFLogConfiguration(t *testing.T) {
 	}
 	if cfg.Firewall.PF.BlockedSource != "file" || cfg.Firewall.PF.PflogInterface != "pflog7" || cfg.Firewall.PF.PflogPath != "/var/pf/pflog" {
 		t.Fatalf("PF log config = %#v", cfg.Firewall.PF)
+	}
+}
+
+func TestLoadTOMLConfigWithEnvironmentAndFlagPrecedence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pf-dashboard.toml")
+	contents := "[server]\naddr = \"127.0.0.1:8081\"\n\n[firewall.pf]\nblocked_source = \"file\"\npflog_path = \"/var/pf/pflog\"\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PFCTL_DASHBOARD_SERVER_ADDR", "127.0.0.1:8082")
+
+	cfg, _, err := Load([]string{"--config", path, "--server.addr=127.0.0.1:8083"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.Addr != "127.0.0.1:8083" {
+		t.Fatalf("server address = %q", cfg.Server.Addr)
+	}
+	if cfg.Firewall.PF.BlockedSource != "file" || cfg.Firewall.PF.PflogPath != "/var/pf/pflog" {
+		t.Fatalf("PF log config = %#v", cfg.Firewall.PF)
+	}
+}
+
+func TestConfigFilePathRejectsMissingValue(t *testing.T) {
+	if _, err := configFilePath([]string{"--config"}); err == nil {
+		t.Fatal("missing config path was accepted")
 	}
 }

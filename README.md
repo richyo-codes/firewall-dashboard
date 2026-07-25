@@ -68,10 +68,11 @@ make docker-build    # build the release Docker image
 
 ## Configuration
 
-Configuration precedence is defaults, environment variables, then command-line
-flags. Environment variables use the `PFCTL_DASHBOARD_` prefix; nested keys use
-underscores, for example `PFCTL_DASHBOARD_SERVER_ADDR` maps to
-`server.addr`.
+Configuration precedence is defaults, TOML configuration file, environment
+variables, then command-line flags. Pass a TOML file explicitly with
+`--config /usr/local/etc/pf-dashboard.toml`. Environment variables use the
+`PFCTL_DASHBOARD_` prefix; nested keys use underscores, for example
+`PFCTL_DASHBOARD_SERVER_ADDR` maps to `server.addr`.
 
 Defaults are OS-aware:
 
@@ -94,6 +95,9 @@ the current platform or its required commands are absent.
 ```bash
 # Bind to all interfaces on port 8081.
 ./pf-dashboard --server.addr=0.0.0.0:8081
+
+# Load settings from a TOML file.
+./pf-dashboard --config /usr/local/etc/pf-dashboard.toml
 
 # Use the Linux nftables backend.
 PFCTL_DASHBOARD_FIREWALL_BACKEND=nftables ./pf-dashboard
@@ -127,6 +131,27 @@ PFCTL_DASHBOARD_FIREWALL_BACKEND=nftables ./pf-dashboard
 # Select one interface for the optional vnStat bandwidth tab.
 ./pf-dashboard --vnstat.interface=em0
 ```
+
+Example TOML configuration:
+
+```toml
+[server]
+addr = "127.0.0.1:8080"
+
+[firewall]
+backend = "pf"
+
+[firewall.pf]
+blocked_source = "auto"
+pflog_interface = "pflog0"
+pflog_path = "/var/pf/pflog"
+
+[vnstat]
+interface = "em0"
+```
+
+The FreeBSD example is also available at
+`packaging/freebsd/pf-dashboard.toml.sample`.
 
 ## Authentication
 
@@ -296,10 +321,14 @@ Set deployment-specific configuration in `/etc/default/pf-dashboard` or
 Install the supplied rc.d script and enable the service:
 
 ```bash
-sudo install -m 0555 packaging/freebsd/rc.d/pf_dashboard /usr/local/etc/rc.d/pf_dashboard
+pf-dashboard config rc.d | sudo install -m 0555 /dev/stdin /usr/local/etc/rc.d/pf_dashboard
 sudo sysrc pf_dashboard_enable=YES
 sudo service pf_dashboard start
 ```
+
+`pf-dashboard config rc.d` writes the bundled service script to stdout without
+starting the dashboard or requiring firewall access. The repository copy at
+`packaging/freebsd/rc.d/pf_dashboard` remains available for packaging.
 
 Use [packaging/freebsd/rc.conf.sample](packaging/freebsd/rc.conf.sample) as a
 starting point for service settings. The rc.d script supports command, flags,
