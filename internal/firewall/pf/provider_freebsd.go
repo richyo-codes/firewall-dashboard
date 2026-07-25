@@ -10,10 +10,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"pfctl-golang/internal/firewall"
 )
@@ -28,7 +31,9 @@ const (
 )
 
 type provider struct {
-	debug bool
+	debug         bool
+	blockedMu     sync.RWMutex
+	recentBlocked []firewall.PacketLogEntry
 }
 
 // New returns a PF-backed provider.
@@ -39,15 +44,108 @@ func New(debug bool) (firewall.Provider, error) {
 	if err := requireBinary(tcpdumpBinary); err != nil {
 		return nil, err
 	}
-	return &provider{debug: debug}, nil
+	provider := &provider{debug: debug}
+	provider.startBlockedCollector()
+	return provider, nil
 }
 
 func (p *provider) BlockedTraffic(ctx context.Context) ([]firewall.PacketLogEntry, error) {
+	live := p.blockedSnapshot()
+	if _, err := os.Stat(pflogPath); err != nil {
+		// pflogd is optional: the live collector reads pflog0 directly.
+		return live, nil
+	}
 	out, err := p.run(ctx, tcpdumpBinary, "-e", "-n", "-tttt", "-r", pflogPath, "-c", strconv.Itoa(maxPflogLines))
 	if err != nil {
+		if len(live) > 0 {
+			return live, nil
+		}
 		return nil, fmt.Errorf("pflog capture: %w", err)
 	}
-	return filterPflogAction(parsePflogOutput(out), "block"), nil
+	return mergeBlockedEntries(live, filterPflogAction(parsePflogOutput(out), "block")), nil
+}
+
+// startBlockedCollector keeps recent blocked packets available even when
+// pflogd is disabled or /var/log/pflog is rotated away.
+func (p *provider) startBlockedCollector() {
+	go func() {
+		for {
+			if err := p.collectBlockedTraffic(); err != nil && p.debug {
+				log.Printf("pf backend blocked collector stopped: %v", err)
+			}
+			time.Sleep(5 * time.Second)
+		}
+	}()
+}
+
+func (p *provider) collectBlockedTraffic() error {
+	cmd := exec.Command(tcpdumpBinary, "-e", "-n", "-tttt", "-l", "-i", pflogInterface, "action", "block")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("tcpdump stdout pipe: %w", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start tcpdump: %w", err)
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 4*1024), 256*1024)
+	for scanner.Scan() {
+		entry, ok := parsePflogLine(scanner.Text())
+		if ok && entry.Action == "block" {
+			p.recordBlocked(entry)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		_ = cmd.Wait()
+		return fmt.Errorf("read tcpdump output: %w", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message != "" {
+			return fmt.Errorf("tcpdump exited: %w: %s", err, message)
+		}
+		return fmt.Errorf("tcpdump exited: %w", err)
+	}
+	return nil
+}
+
+func (p *provider) recordBlocked(entry firewall.PacketLogEntry) {
+	p.blockedMu.Lock()
+	defer p.blockedMu.Unlock()
+	p.recentBlocked = append([]firewall.PacketLogEntry{entry}, p.recentBlocked...)
+	if len(p.recentBlocked) > maxPflogLines {
+		p.recentBlocked = p.recentBlocked[:maxPflogLines]
+	}
+}
+
+func (p *provider) blockedSnapshot() []firewall.PacketLogEntry {
+	p.blockedMu.RLock()
+	defer p.blockedMu.RUnlock()
+	return append([]firewall.PacketLogEntry(nil), p.recentBlocked...)
+}
+
+func mergeBlockedEntries(primary, secondary []firewall.PacketLogEntry) []firewall.PacketLogEntry {
+	merged := append(append([]firewall.PacketLogEntry(nil), primary...), secondary...)
+	seen := make(map[string]struct{}, len(merged))
+	unique := merged[:0]
+	for _, entry := range merged {
+		key := fmt.Sprintf("%s|%s|%s|%s|%d", entry.Timestamp.UTC(), entry.Interface, entry.Source, entry.Dest, entry.RuleID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, entry)
+	}
+	sort.Slice(unique, func(i, j int) bool {
+		return unique[i].Timestamp.After(unique[j].Timestamp)
+	})
+	if len(unique) > maxPflogLines {
+		unique = unique[:maxPflogLines]
+	}
+	return unique
 }
 
 func (p *provider) PassedTraffic(ctx context.Context) ([]firewall.PacketLogEntry, error) {
