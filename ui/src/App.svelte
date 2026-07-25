@@ -22,7 +22,14 @@ type PacketLogEntry = {
     bytes: number;
   };
 
-  type Page = "traffic" | "combined" | "rules";
+  type BandwidthInterface = {
+    name: string;
+    alias?: string;
+    total: { rx: number; tx: number };
+    fiveMinute: { rx: number; tx: number };
+  };
+
+  type Page = "traffic" | "combined" | "rules" | "bandwidth";
 
   type SortDirection = "asc" | "desc";
   type PacketColumn = "timestamp" | "action" | "interface" | "source" | "dest" | "protocol" | "reason" | "direction" | "ruleId";
@@ -48,12 +55,17 @@ type PacketLogEntry = {
       title: "PF Rule Counters",
       description: "Rule evaluation statistics for auditing PF behaviour.",
     },
+    bandwidth: {
+      title: "Bandwidth",
+      description: "Interface totals and recent five-minute usage from vnStat.",
+    },
   };
 
   const HASH_TO_PAGE: Record<string, Page> = {
     "#traffic": "traffic",
     "#combined": "combined",
     "#rules": "rules",
+    "#bandwidth": "bandwidth",
   };
 
   let activePage: Page = "traffic";
@@ -62,6 +74,7 @@ type PacketLogEntry = {
   let blockedViewEnabled = true;
   let streamViewEnabled = true;
   let rulesViewEnabled = true;
+  let bandwidthViewEnabled = false;
   let autoRefreshTraffic = true;
   let paused = false;
   let trafficIntervalMs = 2000;
@@ -73,6 +86,7 @@ type PacketLogEntry = {
   let passed: PacketLogEntry[] = [];
 let combined: PacketLogEntry[] = [];
 let rules: RuleCounter[] = [];
+  let bandwidth: BandwidthInterface[] = [];
 
 let combinedStreamController: AbortController | null = null;
 let combinedStreaming = false;
@@ -98,6 +112,10 @@ let combinedStreamTask: Promise<void> | null = null;
   let rulesError: string | null = null;
   let rulesLastUpdated: Date | null = null;
   let rulesLoaded = false;
+  let bandwidthLoading = false;
+  let bandwidthError: string | null = null;
+  let bandwidthLastUpdated: Date | null = null;
+  let bandwidthLoaded = false;
   let ruleSearch = "";
   let ruleLabelFilter = "";
   let ruleIdFilter = "";
@@ -110,19 +128,25 @@ let combinedStreamTask: Promise<void> | null = null;
       ? trafficLoading
       : activePage === "combined"
         ? combinedLoading
-        : rulesLoading;
+        : activePage === "bandwidth"
+          ? bandwidthLoading
+          : rulesLoading;
   $: currentError =
     activePage === "traffic"
       ? trafficError
       : activePage === "combined"
         ? combinedError
-        : rulesError;
+        : activePage === "bandwidth"
+          ? bandwidthError
+          : rulesError;
   $: currentLastUpdated =
     activePage === "traffic"
       ? trafficLastUpdated
       : activePage === "combined"
         ? combinedLastUpdated
-        : rulesLastUpdated;
+        : activePage === "bandwidth"
+          ? bandwidthLastUpdated
+          : rulesLastUpdated;
 
   onMount(() => {
     if (typeof window !== "undefined") {
@@ -139,10 +163,15 @@ let combinedStreamTask: Promise<void> | null = null;
           window.location.hash = "#traffic";
         }
       }
+      if (!bandwidthViewEnabled && activePage === "bandwidth") {
+        activePage = "traffic";
+      }
       if (activePage === "rules") {
         loadRules();
       } else if (activePage === "combined") {
         startCombinedStream();
+      } else if (activePage === "bandwidth") {
+        loadBandwidth();
       } else {
         loadTraffic();
       }
@@ -326,6 +355,7 @@ function packetKey(entry: PacketLogEntry): string {
         supportsBlockedPacketDetails?: boolean;
         supportsTrafficStream?: boolean;
         supportsRuleCounters?: boolean;
+        supportsBandwidth?: boolean;
       };
       if (data?.trafficIntervalMs && data.trafficIntervalMs > 0) {
         trafficIntervalMs = data.trafficIntervalMs;
@@ -338,6 +368,7 @@ function packetKey(entry: PacketLogEntry): string {
       blockedViewEnabled = data?.supportsBlockedPacketDetails === true || backend === "pf";
       streamViewEnabled = data?.supportsTrafficStream === true || backend === "pf";
       rulesViewEnabled = data?.supportsRuleCounters !== false;
+      bandwidthViewEnabled = data?.supportsBandwidth === true;
     } catch (err) {
       console.warn("failed to load refresh config", err);
     }
@@ -668,12 +699,31 @@ function packetKey(entry: PacketLogEntry): string {
     }
   }
 
+  async function loadBandwidth(force = false) {
+    if (paused || bandwidthLoading || (bandwidthLoaded && !force)) return;
+    bandwidthLoading = true;
+    bandwidthError = null;
+    try {
+      const data = await fetchJSON("/api/bandwidth") as { interfaces?: BandwidthInterface[] };
+      bandwidth = Array.isArray(data.interfaces) ? data.interfaces : [];
+      bandwidthLastUpdated = new Date();
+      bandwidthLoaded = true;
+    } catch (err) {
+      bandwidthError = err instanceof Error ? err.message : "unknown error";
+      bandwidthLoaded = false;
+    } finally {
+      bandwidthLoading = false;
+    }
+  }
+
   function refreshActive() {
     if (paused) return;
     if (activePage === "traffic") {
       loadTraffic();
     } else if (activePage === "combined" && unifiedViewEnabled && streamViewEnabled) {
       startCombinedStream(true);
+    } else if (activePage === "bandwidth") {
+      loadBandwidth(true);
     } else {
       loadRules(true);
     }
@@ -705,6 +755,9 @@ function packetKey(entry: PacketLogEntry): string {
     if (page === "rules" && !rulesViewEnabled) {
       page = "traffic";
     }
+    if (page === "bandwidth" && !bandwidthViewEnabled) {
+      page = "traffic";
+    }
     if (activePage === page) return;
     if (activePage === "combined") {
       stopCombinedStream();
@@ -726,6 +779,9 @@ function packetKey(entry: PacketLogEntry): string {
       if (page === "rules" && !rulesLoaded) {
         loadRules();
       }
+      if (page === "bandwidth" && !bandwidthLoaded) {
+        loadBandwidth();
+      }
     }
     scheduleTrafficRefresh();
   }
@@ -745,6 +801,8 @@ function packetKey(entry: PacketLogEntry): string {
         startCombinedStream(true);
       } else if (activePage === "rules") {
         loadRules(true);
+      } else if (activePage === "bandwidth") {
+        loadBandwidth(true);
       }
       scheduleTrafficRefresh();
     }
@@ -882,6 +940,19 @@ function packetKey(entry: PacketLogEntry): string {
           type="button"
         >
           Rule Counters
+        </button>
+      {/if}
+      {#if bandwidthViewEnabled}
+        <button
+          class={`rounded px-3 py-1 text-sm font-medium transition ${
+            activePage === "bandwidth"
+              ? "bg-slate-800 text-slate-100"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+          on:click={() => setActivePage("bandwidth")}
+          type="button"
+        >
+          Bandwidth
         </button>
       {/if}
     </nav>
@@ -1168,6 +1239,30 @@ function packetKey(entry: PacketLogEntry): string {
           </tbody>
         </table>
       </div>
+    </section>
+  {:else if activePage === "bandwidth"}
+    <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-6">
+      <div class="mb-4 flex items-center justify-between">
+        <h2 class="text-lg font-semibold text-slate-100">vnStat Interface Usage</h2>
+        <span class="text-xs text-slate-400">Five-minute values are the latest vnStat sample.</span>
+      </div>
+      {#if bandwidth.length === 0}
+        <p class="py-6 text-center text-sm text-slate-500">{bandwidthLoading ? "Loading bandwidth…" : "No vnStat interface data available."}</p>
+      {:else}
+        <div class="grid gap-4 md:grid-cols-2">
+          {#each bandwidth as iface}
+            <article class="rounded-lg border border-slate-800 bg-slate-950/50 p-4">
+              <h3 class="font-mono text-base text-cyan-200">{iface.name}{iface.alias ? ` (${iface.alias})` : ""}</h3>
+              <dl class="mt-4 grid grid-cols-2 gap-3 text-sm">
+                <div><dt class="text-slate-500">Total RX</dt><dd class="text-slate-100">{formatBytes(iface.total.rx)}</dd></div>
+                <div><dt class="text-slate-500">Total TX</dt><dd class="text-slate-100">{formatBytes(iface.total.tx)}</dd></div>
+                <div><dt class="text-slate-500">Latest 5m RX</dt><dd class="text-emerald-300">{formatBytes(iface.fiveMinute.rx)}</dd></div>
+                <div><dt class="text-slate-500">Latest 5m TX</dt><dd class="text-sky-300">{formatBytes(iface.fiveMinute.tx)}</dd></div>
+              </dl>
+            </article>
+          {/each}
+        </div>
+      {/if}
     </section>
   {:else}
     <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-6">

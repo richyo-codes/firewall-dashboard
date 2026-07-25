@@ -12,12 +12,12 @@ import (
 
 // New constructs a firewall provider using the given backend identifier.
 // Supported values: "pf", "nftables", "mock". Empty string defaults to "mock".
-func New(name string, debug bool) (firewall.Provider, string, error) {
+func New(name string, debug bool, blockedSource, pflogInterface, pflogPath string) (firewall.Provider, string, error) {
 	switch normalized(name) {
 	case "", "mock", "stub", "test":
 		return mock.New(), "mock", nil
 	case "pf", "pfctl":
-		provider, err := pf.New(debug)
+		provider, err := pf.New(debug, blockedSource, pflogInterface, pflogPath)
 		return provider, "pf", err
 	case "nft", "nftables":
 		provider, err := nftables.New(debug)

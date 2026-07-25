@@ -25,7 +25,8 @@ load_rc_config ${name}
 
 pidfile="${pf_dashboard_pidfile}"
 command="/usr/sbin/daemon"
-command_args="-f -P ${pidfile} -u ${pf_dashboard_user} -o ${pf_dashboard_logfile} /usr/bin/env ${pf_dashboard_env} ${pf_dashboard_command} ${pf_dashboard_flags}"
+# `--` prevents daemon(8) from interpreting application flags as its own.
+command_args="-f -P ${pidfile} -u ${pf_dashboard_user} -o ${pf_dashboard_logfile} -- /usr/bin/env ${pf_dashboard_env} ${pf_dashboard_command} ${pf_dashboard_flags}"
 
 start_precmd="${name}_prestart"
 

@@ -115,6 +115,17 @@ PFCTL_DASHBOARD_FIREWALL_BACKEND=nftables ./pf-dashboard
   --firewall.command_timeout_ms=5000 \
   --firewall.max_concurrent_commands=2 \
   --firewall.max_streams=4
+
+# Read blocked packets live from a custom PF log interface.
+./pf-dashboard --firewall.pf.blocked_source=live \
+  --firewall.pf.pflog_interface=pflog0
+
+# Read blocked packets from a pflogd capture file instead.
+./pf-dashboard --firewall.pf.blocked_source=file \
+  --firewall.pf.pflog_path=/var/pf/pflog
+
+# Select one interface for the optional vnStat bandwidth tab.
+./pf-dashboard --vnstat.interface=em0
 ```
 
 ## Authentication
@@ -239,9 +250,24 @@ For access from another host, bind to the required interface instead of
 dashboard.
 
 Blocked traffic is available only for PF rules that include the `log` option,
-for example `block log all`, and while `pflogd` is running. A plain `block all`
-rule will block packets but will not produce entries for the dashboard to
-display.
+for example `block log all`. A plain `block all` rule will block packets but
+will not produce entries for the dashboard to display.
+
+PF log collection defaults to `firewall.pf.blocked_source=auto`: it reads live
+blocks from `pflog0` and merges them with `/var/log/pflog` when the capture
+file exists. Set the source to `live` to use only the configured
+`firewall.pf.pflog_interface`, or `file` to use only the configured
+`firewall.pf.pflog_path`. This supports layouts such as `pflog0` with
+`/var/pf/pflog`; `pflogd` is needed only when using the file source.
+
+### vnStat Bandwidth
+
+When `vnstat` is installed, the dashboard adds a Bandwidth tab with total and
+latest five-minute RX/TX counters. The tab is absent when the executable is not
+available. Start `vnstatd` so its database is populated, then optionally limit
+the tab to one interface with `vnstat.interface` (or
+`PFCTL_DASHBOARD_VNSTAT_INTERFACE`). Set `vnstat.enabled=false` to disable the
+integration.
 
 ## Deployment and Packaging
 

@@ -21,7 +21,15 @@ const (
 type Config struct {
 	Server   ServerConfig   `koanf:"server"`
 	Firewall FirewallConfig `koanf:"firewall"`
+	VNStat   VNStatConfig   `koanf:"vnstat"`
 	Auth     AuthConfig     `koanf:"auth"`
+}
+
+// VNStatConfig configures optional vnStat bandwidth reporting.
+type VNStatConfig struct {
+	Enabled   bool   `koanf:"enabled"`
+	Binary    string `koanf:"binary"`
+	Interface string `koanf:"interface"`
 }
 
 // ServerConfig represents HTTP server behaviour.
@@ -39,12 +47,20 @@ type ServerRefreshConfig struct {
 
 // FirewallConfig configures the firewall backend.
 type FirewallConfig struct {
-	Backend               string `koanf:"backend"`
-	Debug                 bool   `koanf:"debug"`
-	CacheTTLms            int    `koanf:"cache_ttl_ms"`
-	CommandTimeoutMs      int    `koanf:"command_timeout_ms"`
-	MaxConcurrentCommands int    `koanf:"max_concurrent_commands"`
-	MaxStreams            int    `koanf:"max_streams"`
+	Backend               string   `koanf:"backend"`
+	Debug                 bool     `koanf:"debug"`
+	PF                    PFConfig `koanf:"pf"`
+	CacheTTLms            int      `koanf:"cache_ttl_ms"`
+	CommandTimeoutMs      int      `koanf:"command_timeout_ms"`
+	MaxConcurrentCommands int      `koanf:"max_concurrent_commands"`
+	MaxStreams            int      `koanf:"max_streams"`
+}
+
+// PFConfig configures PF log collection.
+type PFConfig struct {
+	BlockedSource  string `koanf:"blocked_source"`
+	PflogInterface string `koanf:"pflog_interface"`
+	PflogPath      string `koanf:"pflog_path"`
 }
 
 // AuthConfig captures authentication settings.
@@ -81,10 +97,16 @@ func Load(args []string) (*Config, *pflag.FlagSet, error) {
 		"server.refresh.traffic_interval_ms": 2000,
 		"firewall.backend":                   defaultFirewallBackend(),
 		"firewall.debug":                     false,
+		"firewall.pf.blocked_source":         "auto",
+		"firewall.pf.pflog_interface":        "pflog0",
+		"firewall.pf.pflog_path":             "/var/log/pflog",
 		"firewall.cache_ttl_ms":              1000,
 		"firewall.command_timeout_ms":        5000,
 		"firewall.max_concurrent_commands":   2,
 		"firewall.max_streams":               4,
+		"vnstat.enabled":                     true,
+		"vnstat.binary":                      "vnstat",
+		"vnstat.interface":                   "",
 		"auth.mode":                          "none",
 		"auth.oidc.provider_url":             "",
 		"auth.oidc.client_id":                "",
@@ -110,10 +132,16 @@ func Load(args []string) (*Config, *pflag.FlagSet, error) {
 	flagSet.Int("server.refresh.traffic_interval_ms", defaults["server.refresh.traffic_interval_ms"].(int), "traffic auto-refresh interval in milliseconds")
 	flagSet.String("firewall.backend", defaults["firewall.backend"].(string), "firewall backend to use (mock|pf|nftables)")
 	flagSet.Bool("firewall.debug", defaults["firewall.debug"].(bool), "enable verbose firewall command logging")
+	flagSet.String("firewall.pf.blocked_source", defaults["firewall.pf.blocked_source"].(string), "PF blocked traffic source (auto|live|file)")
+	flagSet.String("firewall.pf.pflog_interface", defaults["firewall.pf.pflog_interface"].(string), "PF log interface for live tcpdump collection")
+	flagSet.String("firewall.pf.pflog_path", defaults["firewall.pf.pflog_path"].(string), "PF log capture file for tcpdump playback")
 	flagSet.Int("firewall.cache_ttl_ms", defaults["firewall.cache_ttl_ms"].(int), "firewall result cache lifetime in milliseconds")
 	flagSet.Int("firewall.command_timeout_ms", defaults["firewall.command_timeout_ms"].(int), "firewall command timeout in milliseconds")
 	flagSet.Int("firewall.max_concurrent_commands", defaults["firewall.max_concurrent_commands"].(int), "maximum concurrent firewall commands")
 	flagSet.Int("firewall.max_streams", defaults["firewall.max_streams"].(int), "maximum concurrent live traffic streams")
+	flagSet.Bool("vnstat.enabled", defaults["vnstat.enabled"].(bool), "enable optional vnStat bandwidth data when available")
+	flagSet.String("vnstat.binary", defaults["vnstat.binary"].(string), "vnStat executable path or name")
+	flagSet.String("vnstat.interface", defaults["vnstat.interface"].(string), "optional vnStat interface to show")
 	flagSet.String("auth.mode", defaults["auth.mode"].(string), "authentication mode (none|oidc)")
 	flagSet.String("auth.oidc.provider_url", defaults["auth.oidc.provider_url"].(string), "OIDC provider discovery URL")
 	flagSet.String("auth.oidc.client_id", defaults["auth.oidc.client_id"].(string), "OIDC client ID")
@@ -184,6 +212,26 @@ func Load(args []string) (*Config, *pflag.FlagSet, error) {
 	if cfg.Firewall.MaxStreams <= 0 {
 		cfg.Firewall.MaxStreams = defaults["firewall.max_streams"].(int)
 	}
+	cfg.Firewall.PF.BlockedSource = strings.ToLower(strings.TrimSpace(cfg.Firewall.PF.BlockedSource))
+	if cfg.Firewall.PF.BlockedSource == "" {
+		cfg.Firewall.PF.BlockedSource = defaults["firewall.pf.blocked_source"].(string)
+	}
+	if cfg.Firewall.PF.BlockedSource != "auto" && cfg.Firewall.PF.BlockedSource != "live" && cfg.Firewall.PF.BlockedSource != "file" {
+		return nil, flagSet, fmt.Errorf("invalid firewall.pf.blocked_source %q (want auto, live, or file)", cfg.Firewall.PF.BlockedSource)
+	}
+	cfg.Firewall.PF.PflogInterface = strings.TrimSpace(cfg.Firewall.PF.PflogInterface)
+	if cfg.Firewall.PF.PflogInterface == "" {
+		cfg.Firewall.PF.PflogInterface = defaults["firewall.pf.pflog_interface"].(string)
+	}
+	cfg.Firewall.PF.PflogPath = strings.TrimSpace(cfg.Firewall.PF.PflogPath)
+	if cfg.Firewall.PF.PflogPath == "" {
+		cfg.Firewall.PF.PflogPath = defaults["firewall.pf.pflog_path"].(string)
+	}
+	cfg.VNStat.Binary = strings.TrimSpace(cfg.VNStat.Binary)
+	if cfg.VNStat.Binary == "" {
+		cfg.VNStat.Binary = defaults["vnstat.binary"].(string)
+	}
+	cfg.VNStat.Interface = strings.TrimSpace(cfg.VNStat.Interface)
 
 	return &cfg, flagSet, nil
 }
@@ -204,6 +252,12 @@ var envKeyMappings = map[string]string{
 	"SERVER_REFRESH_TRAFFIC_INTERVAL_MS": "server.refresh.traffic_interval_ms",
 	"FIREWALL_BACKEND":                   "firewall.backend",
 	"FIREWALL_DEBUG":                     "firewall.debug",
+	"FIREWALL_PF_BLOCKED_SOURCE":         "firewall.pf.blocked_source",
+	"FIREWALL_PF_PFLOG_INTERFACE":        "firewall.pf.pflog_interface",
+	"FIREWALL_PF_PFLOG_PATH":             "firewall.pf.pflog_path",
+	"VNSTAT_ENABLED":                     "vnstat.enabled",
+	"VNSTAT_BINARY":                      "vnstat.binary",
+	"VNSTAT_INTERFACE":                   "vnstat.interface",
 	"FIREWALL_CACHE_TTL_MS":              "firewall.cache_ttl_ms",
 	"FIREWALL_COMMAND_TIMEOUT_MS":        "firewall.command_timeout_ms",
 	"FIREWALL_MAX_CONCURRENT_COMMANDS":   "firewall.max_concurrent_commands",

@@ -13,6 +13,7 @@ servers:
 tags:
   - name: Auth
   - name: Traffic
+  - name: Bandwidth
   - name: Rules
   - name: Config
 paths:
@@ -258,6 +259,26 @@ paths:
               schema:
                 type: string
 
+  /api/bandwidth:
+    get:
+      tags: [Bandwidth]
+      summary: Get optional vnStat interface counters
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: vnStat bandwidth report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BandwidthReport'
+        '500':
+          description: vnStat unavailable or its database cannot be read
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/rules:
     get:
       tags: [Rules]
@@ -362,6 +383,8 @@ components:
           type: boolean
         supportsRuleCounters:
           type: boolean
+        supportsBandwidth:
+          type: boolean
       required: [trafficIntervalMs, backend, unifiedViewEnabled]
 
     PacketLogEntry:
@@ -407,3 +430,36 @@ components:
           type: integer
           format: int64
       required: [ruleId, ruleLabel, evaluations, packets, bytes]
+
+    BandwidthCounter:
+      type: object
+      properties:
+        rx:
+          type: integer
+          format: int64
+        tx:
+          type: integer
+          format: int64
+      required: [rx, tx]
+
+    BandwidthInterface:
+      type: object
+      properties:
+        name:
+          type: string
+        alias:
+          type: string
+        total:
+          $ref: '#/components/schemas/BandwidthCounter'
+        fiveMinute:
+          $ref: '#/components/schemas/BandwidthCounter'
+      required: [name, total, fiveMinute]
+
+    BandwidthReport:
+      type: object
+      properties:
+        interfaces:
+          type: array
+          items:
+            $ref: '#/components/schemas/BandwidthInterface'
+      required: [interfaces]

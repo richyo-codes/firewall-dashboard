@@ -25,6 +25,7 @@ import (
 	"pfctl-golang/internal/config"
 	"pfctl-golang/internal/firewall"
 	"pfctl-golang/internal/providers"
+	"pfctl-golang/internal/vnstat"
 )
 
 // uiDist holds the compiled frontend assets.
@@ -37,6 +38,7 @@ type server struct {
 	provider          firewall.Provider
 	backend           string
 	trafficIntervalMs int
+	vnstat            *vnstat.Provider
 }
 
 func main() {
@@ -58,7 +60,13 @@ func main() {
 		logger.Fatalf("failed to load configuration: %v", err)
 	}
 
-	provider, resolvedBackend, err := providers.New(cfg.Firewall.Backend, cfg.Firewall.Debug)
+	provider, resolvedBackend, err := providers.New(
+		cfg.Firewall.Backend,
+		cfg.Firewall.Debug,
+		cfg.Firewall.PF.BlockedSource,
+		cfg.Firewall.PF.PflogInterface,
+		cfg.Firewall.PF.PflogPath,
+	)
 	if err != nil {
 		logger.Fatalf("failed to initialize firewall backend: %v", err)
 	}
@@ -68,6 +76,10 @@ func main() {
 		MaxConcurrentCommands: cfg.Firewall.MaxConcurrentCommands,
 		MaxStreams:            cfg.Firewall.MaxStreams,
 	})
+	bandwidth, err := vnstat.New(cfg.VNStat.Enabled, cfg.VNStat.Binary, cfg.VNStat.Interface)
+	if err != nil {
+		logger.Fatalf("failed to initialize vnStat integration: %v", err)
+	}
 
 	authContext, cancelAuth := context.WithTimeout(context.Background(), 15*time.Second)
 	authManager, err := auth.NewManager(authContext, cfg.Auth, logger)
@@ -82,6 +94,7 @@ func main() {
 		provider:          provider,
 		backend:           resolvedBackend,
 		trafficIntervalMs: cfg.Server.Refresh.TrafficIntervalMs,
+		vnstat:            bandwidth,
 	}
 
 	apiMux := http.NewServeMux()
@@ -89,6 +102,7 @@ func main() {
 	apiMux.Handle("GET /api/passed", withJSON(logger, srv.passedTraffic))
 	apiMux.Handle("GET /api/traffic", withJSON(logger, srv.combinedTraffic))
 	apiMux.Handle("GET /api/rules", withJSON(logger, srv.ruleCounters))
+	apiMux.Handle("GET /api/bandwidth", withJSON(logger, srv.bandwidth))
 	apiMux.Handle("GET /api/stream/traffic", http.HandlerFunc(srv.streamTraffic))
 
 	mux := http.NewServeMux()
@@ -406,6 +420,13 @@ func (s *server) ruleCounters(r *http.Request) (any, error) {
 	return data, nil
 }
 
+func (s *server) bandwidth(r *http.Request) (any, error) {
+	if s.vnstat == nil {
+		return nil, errors.New("vnStat integration is unavailable")
+	}
+	return s.vnstat.Report(r.Context())
+}
+
 func (s *server) streamTraffic(w http.ResponseWriter, r *http.Request) {
 	streamer, ok := s.provider.(firewall.StreamProvider)
 	if !ok {
@@ -447,6 +468,7 @@ func (s *server) refreshConfig(*http.Request) (any, error) {
 	supportsUnified := s.backend == "pf"
 	supportsBlockedPacketDetails := s.backend == "pf"
 	supportsTrafficStream := s.backend == "pf"
+	supportsBandwidth := s.vnstat != nil
 	return map[string]any{
 		"trafficIntervalMs":            s.trafficIntervalMs,
 		"backend":                      s.backend,
@@ -455,5 +477,6 @@ func (s *server) refreshConfig(*http.Request) (any, error) {
 		"supportsBlockedPacketDetails": supportsBlockedPacketDetails,
 		"supportsTrafficStream":        supportsTrafficStream,
 		"supportsRuleCounters":         true,
+		"supportsBandwidth":            supportsBandwidth,
 	}, nil
 }

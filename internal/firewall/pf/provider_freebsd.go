@@ -24,38 +24,62 @@ import (
 const (
 	pfctlBinary    = "pfctl"
 	tcpdumpBinary  = "tcpdump"
-	pflogPath      = "/var/log/pflog"
-	pflogInterface = "pflog0"
 	maxPflogLines  = 200
 	maxStatesCount = 200
 )
 
 type provider struct {
-	debug         bool
-	blockedMu     sync.RWMutex
-	recentBlocked []firewall.PacketLogEntry
+	debug          bool
+	blockedSource  string
+	pflogInterface string
+	pflogPath      string
+	blockedMu      sync.RWMutex
+	recentBlocked  []firewall.PacketLogEntry
 }
 
 // New returns a PF-backed provider.
-func New(debug bool) (firewall.Provider, error) {
+func New(debug bool, blockedSource, pflogInterface, pflogPath string) (firewall.Provider, error) {
 	if err := requireBinary(pfctlBinary); err != nil {
 		return nil, err
 	}
 	if err := requireBinary(tcpdumpBinary); err != nil {
 		return nil, err
 	}
-	provider := &provider{debug: debug}
-	provider.startBlockedCollector()
+	blockedSource = strings.ToLower(strings.TrimSpace(blockedSource))
+	if blockedSource == "" {
+		blockedSource = "auto"
+	}
+	if blockedSource != "auto" && blockedSource != "live" && blockedSource != "file" {
+		return nil, fmt.Errorf("invalid blocked traffic source %q", blockedSource)
+	}
+	pflogInterface = strings.TrimSpace(pflogInterface)
+	if pflogInterface == "" {
+		pflogInterface = "pflog0"
+	}
+	pflogPath = strings.TrimSpace(pflogPath)
+	if pflogPath == "" {
+		pflogPath = "/var/log/pflog"
+	}
+	provider := &provider{debug: debug, blockedSource: blockedSource, pflogInterface: pflogInterface, pflogPath: pflogPath}
+	if blockedSource != "file" {
+		provider.startBlockedCollector()
+	}
 	return provider, nil
 }
 
 func (p *provider) BlockedTraffic(ctx context.Context) ([]firewall.PacketLogEntry, error) {
+	if p.blockedSource == "live" {
+		return p.blockedSnapshot(), nil
+	}
 	live := p.blockedSnapshot()
-	if _, err := os.Stat(pflogPath); err != nil {
+	if _, err := os.Stat(p.pflogPath); err != nil {
+		if p.blockedSource == "file" {
+			return nil, fmt.Errorf("pflog capture: %w", err)
+		}
 		// pflogd is optional: the live collector reads pflog0 directly.
 		return live, nil
 	}
-	out, err := p.run(ctx, tcpdumpBinary, "-e", "-n", "-tttt", "-r", pflogPath, "-c", strconv.Itoa(maxPflogLines))
+	out, err := p.run(ctx, tcpdumpBinary, "-e", "-n", "-tttt", "-r", p.pflogPath, "-c", strconv.Itoa(maxPflogLines))
 	if err != nil {
 		if len(live) > 0 {
 			return live, nil
@@ -79,7 +103,7 @@ func (p *provider) startBlockedCollector() {
 }
 
 func (p *provider) collectBlockedTraffic() error {
-	cmd := exec.Command(tcpdumpBinary, "-e", "-n", "-tttt", "-l", "-i", pflogInterface, "action", "block")
+	cmd := exec.Command(tcpdumpBinary, "-e", "-n", "-tttt", "-l", "-i", p.pflogInterface, "action", "block")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("tcpdump stdout pipe: %w", err)
@@ -169,7 +193,7 @@ func (p *provider) RuleCounters(ctx context.Context) ([]firewall.RuleCounter, er
 }
 
 func (p *provider) StreamTraffic(ctx context.Context, action string) (io.ReadCloser, error) {
-	args := []string{"-e", "-n", "-tttt", "-l", "-i", pflogInterface}
+	args := []string{"-e", "-n", "-tttt", "-l", "-i", p.pflogInterface}
 	action = strings.ToLower(strings.TrimSpace(action))
 	switch action {
 	case "", "pass", "block", "rdr", "*":

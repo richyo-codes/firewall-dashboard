@@ -20,3 +20,17 @@ func TestLoadSecurityAndResourceControls(t *testing.T) {
 		t.Fatalf("allowed groups = %#v", cfg.Auth.OIDC.AllowedGroups)
 	}
 }
+
+func TestLoadPFLogConfiguration(t *testing.T) {
+	t.Setenv("PFCTL_DASHBOARD_FIREWALL_PF_BLOCKED_SOURCE", "file")
+	t.Setenv("PFCTL_DASHBOARD_FIREWALL_PF_PFLOG_INTERFACE", "pflog7")
+	t.Setenv("PFCTL_DASHBOARD_FIREWALL_PF_PFLOG_PATH", "/var/pf/pflog")
+
+	cfg, _, err := Load(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Firewall.PF.BlockedSource != "file" || cfg.Firewall.PF.PflogInterface != "pflog7" || cfg.Firewall.PF.PflogPath != "/var/pf/pflog" {
+		t.Fatalf("PF log config = %#v", cfg.Firewall.PF)
+	}
+}
