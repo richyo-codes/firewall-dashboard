@@ -15,6 +15,9 @@ func TestHandleRCD(t *testing.T) {
 	if !strings.Contains(stdout.String(), "PROVIDE: pf_dashboard") {
 		t.Fatalf("unexpected rc.d output: %q", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "pf_dashboard_app_flags") || !strings.Contains(stdout.String(), "pf_dashboard_flags=\"\"") {
+		t.Fatalf("rc.d output does not protect daemon from application flags: %q", stdout.String())
+	}
 	if stderr.Len() != 0 {
 		t.Fatalf("unexpected stderr: %q", stderr.String())
 	}

@@ -262,7 +262,7 @@ paths:
   /api/bandwidth:
     get:
       tags: [Bandwidth]
-      summary: Get optional vnStat interface counters
+      summary: Get optional vnStat interface counters and five-minute history
       security:
         - cookieAuth: []
       responses:
@@ -453,7 +453,22 @@ components:
           $ref: '#/components/schemas/BandwidthCounter'
         fiveMinute:
           $ref: '#/components/schemas/BandwidthCounter'
-      required: [name, total, fiveMinute]
+        history:
+          type: array
+          description: Up to 48 recent five-minute vnStat samples, oldest first.
+          items:
+            $ref: '#/components/schemas/BandwidthSample'
+      required: [name, total, fiveMinute, history]
+
+    BandwidthSample:
+      allOf:
+        - $ref: '#/components/schemas/BandwidthCounter'
+        - type: object
+          properties:
+            at:
+              type: string
+              format: date-time
+          required: [at]
 
     BandwidthReport:
       type: object

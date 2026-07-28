@@ -16,7 +16,8 @@ load_rc_config $name
 : ${pf_dashboard_user:="pf-dashboard"}
 : ${pf_dashboard_group:="pf-dashboard"}
 : ${pf_dashboard_command:="%%PREFIX%%/sbin/pf-dashboard"}
-: ${pf_dashboard_flags:=""}
+: ${pf_dashboard_app_flags:="${pf_dashboard_flags:-}"}
+: ${pf_dashboard_app_flags:=""}
 : ${pf_dashboard_env:=""}
 : ${pf_dashboard_rundir:="/var/run/pf-dashboard"}
 : ${pf_dashboard_logdir:="/var/log/pf-dashboard"}
@@ -24,7 +25,10 @@ load_rc_config $name
 
 pidfile="${pf_dashboard_rundir}/${name}.pid"
 command=/usr/sbin/daemon
-command_args="-f -P ${pidfile} -u ${pf_dashboard_user} -o ${pf_dashboard_logfile} /usr/bin/env ${pf_dashboard_env} ${pf_dashboard_command} ${pf_dashboard_flags}"
+# rc.subr reserves ${name}_flags for daemon(8) options. Keep the old setting as
+# a compatibility alias, but pass application flags only after daemon's `--`.
+pf_dashboard_flags=""
+command_args="-f -P ${pidfile} -u ${pf_dashboard_user} -o ${pf_dashboard_logfile} -- /usr/bin/env ${pf_dashboard_env} ${pf_dashboard_command} ${pf_dashboard_app_flags}"
 
 start_precmd="${name}_prestart"
 

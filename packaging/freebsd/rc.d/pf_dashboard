@@ -16,7 +16,8 @@ load_rc_config ${name}
 : ${pf_dashboard_user:="pf-dashboard"}
 : ${pf_dashboard_group:="pf-dashboard"}
 : ${pf_dashboard_command:="/usr/local/sbin/pf-dashboard"}
-: ${pf_dashboard_flags:="--server.addr=0.0.0.0:8080"}
+: ${pf_dashboard_app_flags:="${pf_dashboard_flags:-}"}
+: ${pf_dashboard_app_flags:="--server.addr=0.0.0.0:8080"}
 : ${pf_dashboard_env:=""}
 : ${pf_dashboard_rundir:="/var/run/pf-dashboard"}
 : ${pf_dashboard_logdir:="/var/log/pf-dashboard"}
@@ -25,8 +26,10 @@ load_rc_config ${name}
 
 pidfile="${pf_dashboard_pidfile}"
 command="/usr/sbin/daemon"
-# `--` prevents daemon(8) from interpreting application flags as its own.
-command_args="-f -P ${pidfile} -u ${pf_dashboard_user} -o ${pf_dashboard_logfile} -- /usr/bin/env ${pf_dashboard_env} ${pf_dashboard_command} ${pf_dashboard_flags}"
+# rc.subr prepends ${name}_flags to command_args. Preserve its legacy value as
+# application flags, then clear it so daemon(8) never consumes application flags.
+pf_dashboard_flags=""
+command_args="-f -P ${pidfile} -u ${pf_dashboard_user} -o ${pf_dashboard_logfile} -- /usr/bin/env ${pf_dashboard_env} ${pf_dashboard_command} ${pf_dashboard_app_flags}"
 
 start_precmd="${name}_prestart"
 

@@ -27,6 +27,13 @@ type PacketLogEntry = {
     alias?: string;
     total: { rx: number; tx: number };
     fiveMinute: { rx: number; tx: number };
+    history: BandwidthSample[];
+  };
+
+  type BandwidthSample = {
+    at: string;
+    rx: number;
+    tx: number;
   };
 
   type Page = "traffic" | "combined" | "rules" | "bandwidth";
@@ -57,7 +64,7 @@ type PacketLogEntry = {
     },
     bandwidth: {
       title: "Bandwidth",
-      description: "Interface totals and recent five-minute usage from vnStat.",
+      description: "Live-refreshing five-minute RX/TX averages from vnStat.",
     },
   };
 
@@ -150,9 +157,14 @@ let combinedStreamTask: Promise<void> | null = null;
 
   onMount(() => {
     if (typeof window !== "undefined") {
-      const initial = HASH_TO_PAGE[window.location.hash.toLowerCase()];
+      const [pageHash, query = ""] = window.location.hash.split("?", 2);
+      const initial = HASH_TO_PAGE[pageHash.toLowerCase()];
       if (initial) {
         activePage = initial;
+      }
+      const ruleID = new URLSearchParams(query).get("rule");
+      if (initial === "rules" && ruleID && /^\d+$/.test(ruleID)) {
+        ruleIdFilter = ruleID;
       }
     }
 
@@ -536,6 +548,33 @@ function packetKey(entry: PacketLogEntry): string {
       }));
   }
 
+  function normalizeBandwidth(data: unknown): BandwidthInterface[] {
+    if (!data || typeof data !== "object") return [];
+    const interfaces = (data as { interfaces?: unknown }).interfaces;
+    if (!Array.isArray(interfaces)) return [];
+    return interfaces
+      .map((item) => (item && typeof item === "object" ? (item as Record<string, unknown>) : null))
+      .filter((item): item is Record<string, unknown> => item !== null)
+      .map((item) => {
+        const total = item.total && typeof item.total === "object" ? item.total as Record<string, unknown> : {};
+        const fiveMinute = item.fiveMinute && typeof item.fiveMinute === "object" ? item.fiveMinute as Record<string, unknown> : {};
+        const history = Array.isArray(item.history) ? item.history : [];
+        return {
+          name: toString(item.name),
+          alias: toString(item.alias) || undefined,
+          total: { rx: toNumber(total.rx), tx: toNumber(total.tx) },
+          fiveMinute: { rx: toNumber(fiveMinute.rx), tx: toNumber(fiveMinute.tx) },
+          history: history
+            .map((sample) => sample && typeof sample === "object" ? sample as Record<string, unknown> : null)
+            .filter((sample): sample is Record<string, unknown> => sample !== null)
+            .map((sample) => ({ at: toString(sample.at), rx: toNumber(sample.rx), tx: toNumber(sample.tx) }))
+            .filter((sample) => !Number.isNaN(Date.parse(sample.at)))
+            .sort((a, b) => Date.parse(a.at) - Date.parse(b.at)),
+        };
+      })
+      .filter((iface) => iface.name !== "");
+  }
+
   async function fetchJSON(path: string): Promise<unknown> {
     const response = await fetch(path);
     if (!response.ok) {
@@ -704,8 +743,7 @@ function packetKey(entry: PacketLogEntry): string {
     bandwidthLoading = true;
     bandwidthError = null;
     try {
-      const data = await fetchJSON("/api/bandwidth") as { interfaces?: BandwidthInterface[] };
-      bandwidth = Array.isArray(data.interfaces) ? data.interfaces : [];
+      bandwidth = normalizeBandwidth(await fetchJSON("/api/bandwidth"));
       bandwidthLastUpdated = new Date();
       bandwidthLoaded = true;
     } catch (err) {
@@ -737,10 +775,12 @@ function packetKey(entry: PacketLogEntry): string {
     if (paused) {
       return;
     }
-    if (autoRefreshTraffic && activePage === "traffic") {
+    if (autoRefreshTraffic && (activePage === "traffic" || activePage === "bandwidth")) {
       trafficTimer = setInterval(() => {
         if (activePage === "traffic" && !paused) {
           loadTraffic();
+        } else if (activePage === "bandwidth" && !paused) {
+          loadBandwidth(true);
         }
       }, trafficIntervalMs);
     }
@@ -786,6 +826,22 @@ function packetKey(entry: PacketLogEntry): string {
     scheduleTrafficRefresh();
   }
 
+  function jumpToRule(ruleID: number | undefined) {
+    if (ruleID == null || !Number.isInteger(ruleID) || ruleID < 0) return;
+    clearRuleFilters();
+    ruleIdFilter = String(ruleID);
+    rulesSort = { column: "ruleId", direction: "asc" };
+    if (activePage === "combined") {
+      stopCombinedStream();
+    }
+    activePage = "rules";
+    if (typeof window !== "undefined") {
+      window.location.hash = `#rules?rule=${ruleID}`;
+    }
+    loadRules(true);
+    scheduleTrafficRefresh();
+  }
+
   function togglePause() {
     paused = !paused;
     if (paused) {
@@ -827,6 +883,26 @@ function packetKey(entry: PacketLogEntry): string {
     } while (value >= 1024 && idx < units.length - 1);
     return `${value.toFixed(1)} ${units[idx]}`;
   }
+
+  function formatRate(bytesPerSecond: number) {
+    return `${formatBytes(bytesPerSecond)}/s`;
+  }
+
+  function bandwidthGraphMax(samples: BandwidthSample[]) {
+    return Math.max(1, ...samples.flatMap((sample) => [sample.rx, sample.tx]));
+  }
+
+  function bandwidthGraphPoints(samples: BandwidthSample[], direction: "rx" | "tx") {
+    if (samples.length < 2) return "";
+    const max = bandwidthGraphMax(samples);
+    return samples
+      .map((sample, index) => {
+        const x = (index / (samples.length - 1)) * 100;
+        const y = 100 - (sample[direction] / max) * 100;
+        return `${x.toFixed(2)},${y.toFixed(2)}`;
+      })
+      .join(" ");
+  }
 </script>
 
 <main class="mx-auto flex min-h-screen max-w-6xl flex-col gap-8 px-6 py-10">
@@ -841,7 +917,7 @@ function packetKey(entry: PacketLogEntry): string {
         </p>
       </div>
       <div class="flex flex-wrap items-center justify-end gap-4">
-        {#if activePage === "traffic"}
+        {#if activePage === "traffic" || activePage === "bandwidth"}
           <label class="flex items-center gap-2 text-xs text-slate-400">
             <input
               type="checkbox"
@@ -1008,12 +1084,17 @@ function packetKey(entry: PacketLogEntry): string {
                     Reason <span>{sortIndicator(blockedSort, "reason")}</span>
                   </button>
                 </th>
+                <th class="py-2 pr-4">
+                  <button type="button" class="flex items-center gap-1" on:click={() => toggleBlockedSort("ruleId")}>
+                    Rule <span>{sortIndicator(blockedSort, "ruleId")}</span>
+                  </button>
+                </th>
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-900/60 text-slate-200">
               {#if blockedView.length === 0}
                 <tr>
-                  <td colspan="6" class="py-6 text-center text-sm text-slate-500">
+                  <td colspan="7" class="py-6 text-center text-sm text-slate-500">
                     No blocked packets reported.
                   </td>
                 </tr>
@@ -1034,6 +1115,20 @@ function packetKey(entry: PacketLogEntry): string {
                       {(entry?.protocol ?? "").toUpperCase()}
                     </td>
                     <td class="py-2 pr-4 text-slate-300">{entry?.reason ?? ""}</td>
+                    <td class="py-2 pr-4 text-xs">
+                      {#if entry?.ruleId != null && entry.ruleId >= 0}
+                        <button
+                          type="button"
+                          class="font-mono text-cyan-300 underline decoration-cyan-700 underline-offset-4 hover:text-cyan-100"
+                          on:click={() => jumpToRule(entry.ruleId)}
+                          title={`Open rule ${entry.ruleId} in Rule Counters`}
+                        >
+                          #{entry.ruleId}
+                        </button>
+                      {:else}
+                        <span class="text-slate-600">—</span>
+                      {/if}
+                    </td>
                   </tr>
                 {/each}
               {/if}
@@ -1214,8 +1309,19 @@ function packetKey(entry: PacketLogEntry): string {
                     <td class="py-2 pr-4 text-xs text-slate-300">
                       {(entry?.direction ?? "").toUpperCase() || "—"}
                     </td>
-                    <td class="py-2 pr-4 text-xs text-slate-300">
-                      {entry?.ruleId ?? "—"}
+                    <td class="py-2 pr-4 text-xs">
+                      {#if (entry?.action ?? "").toLowerCase() === "block" && entry?.ruleId != null && entry.ruleId >= 0}
+                        <button
+                          type="button"
+                          class="font-mono text-cyan-300 underline decoration-cyan-700 underline-offset-4 hover:text-cyan-100"
+                          on:click={() => jumpToRule(entry.ruleId)}
+                          title={`Open rule ${entry.ruleId} in Rule Counters`}
+                        >
+                          #{entry.ruleId}
+                        </button>
+                      {:else}
+                        <span class="font-mono text-slate-300">{entry?.ruleId ?? "—"}</span>
+                      {/if}
                     </td>
                     <td class="py-2 pr-4 text-sm text-slate-200">
                       {(entry?.interface ?? "").toUpperCase()}
@@ -1244,7 +1350,7 @@ function packetKey(entry: PacketLogEntry): string {
     <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-6">
       <div class="mb-4 flex items-center justify-between">
         <h2 class="text-lg font-semibold text-slate-100">vnStat Interface Usage</h2>
-        <span class="text-xs text-slate-400">Five-minute values are the latest vnStat sample.</span>
+        <span class="text-xs text-slate-400">Live refresh uses vnStat five-minute averages.</span>
       </div>
       {#if bandwidth.length === 0}
         <p class="py-6 text-center text-sm text-slate-500">{bandwidthLoading ? "Loading bandwidth…" : "No vnStat interface data available."}</p>
@@ -1256,9 +1362,28 @@ function packetKey(entry: PacketLogEntry): string {
               <dl class="mt-4 grid grid-cols-2 gap-3 text-sm">
                 <div><dt class="text-slate-500">Total RX</dt><dd class="text-slate-100">{formatBytes(iface.total.rx)}</dd></div>
                 <div><dt class="text-slate-500">Total TX</dt><dd class="text-slate-100">{formatBytes(iface.total.tx)}</dd></div>
-                <div><dt class="text-slate-500">Latest 5m RX</dt><dd class="text-emerald-300">{formatBytes(iface.fiveMinute.rx)}</dd></div>
-                <div><dt class="text-slate-500">Latest 5m TX</dt><dd class="text-sky-300">{formatBytes(iface.fiveMinute.tx)}</dd></div>
+                <div><dt class="text-slate-500">RX average</dt><dd class="text-emerald-300">{formatRate(iface.fiveMinute.rx / 300)}</dd></div>
+                <div><dt class="text-slate-500">TX average</dt><dd class="text-sky-300">{formatRate(iface.fiveMinute.tx / 300)}</dd></div>
               </dl>
+              {#if iface.history.length > 1}
+                <div class="mt-5 rounded-md border border-slate-800 bg-slate-950/70 p-3">
+                  <div class="mb-2 flex items-center justify-between text-xs text-slate-500">
+                    <span>Five-minute average history</span>
+                    <span>{formatDate(iface.history[0].at)} - {formatDate(iface.history[iface.history.length - 1].at)}</span>
+                  </div>
+                  <svg class="h-32 w-full overflow-visible" viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label={`RX and TX history for ${iface.name}`}>
+                    <line x1="0" y1="25" x2="100" y2="25" stroke="rgb(51 65 85)" stroke-width="0.5" />
+                    <line x1="0" y1="50" x2="100" y2="50" stroke="rgb(51 65 85)" stroke-width="0.5" />
+                    <line x1="0" y1="75" x2="100" y2="75" stroke="rgb(51 65 85)" stroke-width="0.5" />
+                    <polyline fill="none" stroke="rgb(52 211 153)" stroke-width="2" vector-effect="non-scaling-stroke" points={bandwidthGraphPoints(iface.history, "rx")} />
+                    <polyline fill="none" stroke="rgb(56 189 248)" stroke-width="2" vector-effect="non-scaling-stroke" points={bandwidthGraphPoints(iface.history, "tx")} />
+                  </svg>
+                  <div class="mt-2 flex gap-4 text-xs">
+                    <span class="text-emerald-300">RX peak {formatRate(Math.max(...iface.history.map((sample) => sample.rx)) / 300)}</span>
+                    <span class="text-sky-300">TX peak {formatRate(Math.max(...iface.history.map((sample) => sample.tx)) / 300)}</span>
+                  </div>
+                </div>
+              {/if}
             </article>
           {/each}
         </div>

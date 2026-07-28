@@ -112,3 +112,15 @@ func TestParseRuleID(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatCommand(t *testing.T) {
+	got := formatCommand("tcpdump", "-i", "pflog0", "action", "block")
+	if want := "tcpdump -i pflog0 action block"; got != want {
+		t.Fatalf("formatCommand() = %q, want %q", got, want)
+	}
+
+	got = formatCommand("tcpdump", "-r", "/var/log/pf log")
+	if want := "tcpdump -r \"/var/log/pf log\""; got != want {
+		t.Fatalf("formatCommand() = %q, want %q", got, want)
+	}
+}

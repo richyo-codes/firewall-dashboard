@@ -266,7 +266,7 @@ sudo install -m 0555 packaging/freebsd/rc.d/pf_dashboard \
 sudo sysrc pf_dashboard_enable=YES
 sudo sysrc pf_dashboard_user=pf-dashboard
 sudo sysrc pf_dashboard_group=pf-dashboard
-sudo sysrc pf_dashboard_flags='--server.addr=127.0.0.1:8080 --firewall.backend=pf'
+sudo sysrc pf_dashboard_app_flags='--server.addr=127.0.0.1:8080 --firewall.backend=pf'
 sudo service pf_dashboard start
 ```
 
@@ -285,14 +285,21 @@ file exists. Set the source to `live` to use only the configured
 `firewall.pf.pflog_path`. This supports layouts such as `pflog0` with
 `/var/pf/pflog`; `pflogd` is needed only when using the file source.
 
+At startup, the service logs the selected blocked source, interface, and
+capture path. Set `firewall.debug=true` to also log every `pfctl` and `tcpdump`
+subcommand, including the live blocked collector and browser traffic streams.
+
 ### vnStat Bandwidth
 
-When `vnstat` is installed, the dashboard adds a Bandwidth tab with total and
-latest five-minute RX/TX counters. The tab is absent when the executable is not
-available. Start `vnstatd` so its database is populated, then optionally limit
-the tab to one interface with `vnstat.interface` (or
+When `vnstat` is installed, the dashboard adds a live-refreshing Bandwidth tab
+with interface totals, the latest five-minute RX/TX rate, and a graph of up to
+four hours of five-minute samples. The graph is shown only when vnStat has
+history for the selected interface. The tab is absent when the executable is
+not available. Start `vnstatd` so its database is populated, then optionally
+limit the tab to one interface with `vnstat.interface` (or
 `PFCTL_DASHBOARD_VNSTAT_INTERFACE`). Set `vnstat.enabled=false` to disable the
-integration.
+integration. The refresh cadence follows `server.refresh.traffic_interval_ms`;
+the displayed rates remain five-minute averages provided by vnStat.
 
 ## Deployment and Packaging
 

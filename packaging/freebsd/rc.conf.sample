@@ -4,10 +4,11 @@ pf_dashboard_enable="YES"
 pf_dashboard_user="pf-dashboard"
 pf_dashboard_group="pf-dashboard"
 pf_dashboard_command="/usr/local/sbin/pf-dashboard"
-pf_dashboard_flags="--server.addr=0.0.0.0:8080 --firewall.backend=pf"
+pf_dashboard_app_flags="--server.addr=0.0.0.0:8080 --firewall.backend=pf"
 # To use TOML instead, copy pf-dashboard.toml.sample to
 # /usr/local/etc/pf-dashboard.toml and set:
-# pf_dashboard_flags="--config=/usr/local/etc/pf-dashboard.toml"
+# pf_dashboard_app_flags="--config=/usr/local/etc/pf-dashboard.toml"
+# pf_dashboard_flags remains a compatibility alias for older configurations.
 
 # Optional environment variables passed to the daemon process.
 # pf_dashboard_env="PFCTL_DASHBOARD_AUTH_MODE=none PFCTL_DASHBOARD_FIREWALL_PF_BLOCKED_SOURCE=live PFCTL_DASHBOARD_FIREWALL_PF_PFLOG_INTERFACE=pflog0 PFCTL_DASHBOARD_VNSTAT_INTERFACE=em0"

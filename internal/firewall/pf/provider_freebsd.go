@@ -61,6 +61,7 @@ func New(debug bool, blockedSource, pflogInterface, pflogPath string) (firewall.
 		pflogPath = "/var/log/pflog"
 	}
 	provider := &provider{debug: debug, blockedSource: blockedSource, pflogInterface: pflogInterface, pflogPath: pflogPath}
+	log.Printf("pf backend: blocked source=%s interface=%s capture=%s", blockedSource, pflogInterface, pflogPath)
 	if blockedSource != "file" {
 		provider.startBlockedCollector()
 	}
@@ -103,7 +104,9 @@ func (p *provider) startBlockedCollector() {
 }
 
 func (p *provider) collectBlockedTraffic() error {
-	cmd := exec.Command(tcpdumpBinary, "-e", "-n", "-tttt", "-l", "-i", p.pflogInterface, "action", "block")
+	args := []string{"-e", "-n", "-tttt", "-l", "-i", p.pflogInterface, "action", "block"}
+	p.logCommand(tcpdumpBinary, args...)
+	cmd := exec.Command(tcpdumpBinary, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("tcpdump stdout pipe: %w", err)
@@ -205,6 +208,7 @@ func (p *provider) StreamTraffic(ctx context.Context, action string) (io.ReadClo
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
+	p.logCommand(tcpdumpBinary, args...)
 	cmd := exec.CommandContext(ctx, tcpdumpBinary, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -237,10 +241,8 @@ func (p *provider) StreamTraffic(ctx context.Context, action string) (io.ReadClo
 }
 
 func (p *provider) run(ctx context.Context, cmd string, args ...string) ([]byte, error) {
-	full := strings.TrimSpace(cmd + " " + strings.Join(args, " "))
-	if p.debug {
-		log.Printf("pf backend: executing %s", full)
-	}
+	full := formatCommand(cmd, args...)
+	p.logCommand(cmd, args...)
 
 	c := exec.CommandContext(ctx, cmd, args...)
 	var stdout, stderr bytes.Buffer
@@ -263,6 +265,12 @@ func (p *provider) run(ctx context.Context, cmd string, args ...string) ([]byte,
 		log.Printf("pf backend: command succeeded %s (stdout %d bytes)", full, stdout.Len())
 	}
 	return stdout.Bytes(), nil
+}
+
+func (p *provider) logCommand(command string, args ...string) {
+	if p.debug {
+		log.Printf("pf backend: executing %s", formatCommand(command, args...))
+	}
 }
 
 func parseRuleCounters(out []byte) []firewall.RuleCounter {
