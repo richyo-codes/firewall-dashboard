@@ -31,6 +31,13 @@ func TestParsePflogLine(t *testing.T) {
 			wantRule: 439,
 		},
 		{
+			name:     "ruleset-qualified block entry",
+			line:     "2026-07-28 19:09:29.914811 rule 32..567/0(match): block in on lan0.4: 192.168.134.166.56052 > 10.89.0.1.59733: UDP, length 124",
+			wantAct:  "block",
+			wantDir:  "in",
+			wantRule: 567,
+		},
+		{
 			name:     "rdr entry",
 			line:     "2025-10-18 20:01:05.123456 rule 123/0(match): rdr out on wan0: 198.51.100.24.443 > 10.0.0.10.8443: TCP, length 0",
 			wantAct:  "rdr",
@@ -103,6 +110,7 @@ func TestParseRuleID(t *testing.T) {
 	}{
 		{"81/0", 81},
 		{"439/1", 439},
+		{"32..567/0", 567},
 		{"999", 999},
 		{"bad/entry", 0},
 	}

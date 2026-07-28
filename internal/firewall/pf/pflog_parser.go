@@ -19,7 +19,7 @@ var (
 		"2006-01-02 15:04:05",
 		"2006-01-02 15:04:05.000000",
 	}
-	pflogLineRegex = regexp.MustCompile(`^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<time>\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+rule\s+(?P<rule>\d+/\d+)\(match\):\s+(?P<action>[a-zA-Z]+)\s+(?P<direction>in|out)\s+on\s+(?P<iface>[^:]+):\s+(?P<payload>.*)$`)
+	pflogLineRegex = regexp.MustCompile(`^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<time>\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+rule\s+(?P<rule>\d+(?:\.\.\d+)?/\d+)\(match\):\s+(?P<action>[a-zA-Z]+)\s+(?P<direction>in|out)\s+on\s+(?P<iface>[^:]+):\s+(?P<payload>.*)$`)
 )
 
 func parsePflogOutput(out []byte) []firewall.PacketLogEntry {
@@ -138,6 +138,9 @@ func parseRuleID(rule string) int {
 		return 0
 	}
 	idStr := rule[:slashIdx]
+	if rulesetEnd := strings.LastIndex(idStr, ".."); rulesetEnd >= 0 {
+		idStr = idStr[rulesetEnd+2:]
+	}
 	if id, err := strconv.Atoi(idStr); err == nil {
 		return id
 	}

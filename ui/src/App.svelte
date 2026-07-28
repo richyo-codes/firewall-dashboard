@@ -472,7 +472,7 @@ function packetKey(entry: PacketLogEntry): string {
     return state.direction === "asc" ? "▲" : "▼";
   }
 
-  const streamRegex = /^(?<date>\d{4}-\d{2}-\d{2})\s+(?<time>\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+rule\s+(?<rule>\d+\/\d+)\(match\):\s+(?<action>[A-Za-z]+)\s+(?<direction>in|out)\s+on\s+(?<iface>[^:]+):\s+(?<payload>.*)$/;
+  const streamRegex = /^(?<date>\d{4}-\d{2}-\d{2})\s+(?<time>\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+rule\s+(?<rule>\d+(?:\.\.\d+)?\/\d+)\(match\):\s+(?<action>[A-Za-z]+)\s+(?<direction>in|out)\s+on\s+(?<iface>[^:]+):\s+(?<payload>.*)$/;
 
   function parseStreamLine(line: string): PacketLogEntry | null {
     const match = streamRegex.exec(line);
@@ -520,7 +520,7 @@ function packetKey(entry: PacketLogEntry): string {
   function parseRuleId(rule: string | undefined): number {
     if (!rule) return 0;
     const slash = rule.indexOf("/");
-    const idStr = slash === -1 ? rule : rule.slice(0, slash);
+    const idStr = (slash === -1 ? rule : rule.slice(0, slash)).split("..").at(-1) ?? "";
     const parsed = Number.parseInt(idStr, 10);
     return Number.isFinite(parsed) ? parsed : 0;
   }
