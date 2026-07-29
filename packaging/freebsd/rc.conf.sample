@@ -4,7 +4,7 @@ pf_dashboard_enable="YES"
 pf_dashboard_user="pf-dashboard"
 pf_dashboard_group="pf-dashboard"
 pf_dashboard_command="/usr/local/sbin/pf-dashboard"
-pf_dashboard_app_flags="--server.addr=0.0.0.0:8080 --firewall.backend=pf"
+pf_dashboard_app_flags="--server.addr=127.0.0.1:8080 --firewall.backend=pf"
 # To use TOML instead, copy pf-dashboard.toml.sample to
 # /usr/local/etc/pf-dashboard.toml and set:
 # pf_dashboard_app_flags="--config=/usr/local/etc/pf-dashboard.toml"

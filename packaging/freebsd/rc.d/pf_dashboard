@@ -17,7 +17,7 @@ load_rc_config ${name}
 : ${pf_dashboard_group:="pf-dashboard"}
 : ${pf_dashboard_command:="/usr/local/sbin/pf-dashboard"}
 : ${pf_dashboard_app_flags:="${pf_dashboard_flags:-}"}
-: ${pf_dashboard_app_flags:="--server.addr=0.0.0.0:8080"}
+: ${pf_dashboard_app_flags:="--server.addr=127.0.0.1:8080"}
 : ${pf_dashboard_env:=""}
 : ${pf_dashboard_rundir:="/var/run/pf-dashboard"}
 : ${pf_dashboard_logdir:="/var/log/pf-dashboard"}

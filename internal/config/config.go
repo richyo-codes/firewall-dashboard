@@ -24,7 +24,14 @@ type Config struct {
 	Server   ServerConfig   `koanf:"server"`
 	Firewall FirewallConfig `koanf:"firewall"`
 	VNStat   VNStatConfig   `koanf:"vnstat"`
+	QoS      QoSConfig      `koanf:"qos"`
 	Auth     AuthConfig     `koanf:"auth"`
+}
+
+// QoSConfig configures optional PF/ALTQ queue monitoring.
+type QoSConfig struct {
+	Enabled bool   `koanf:"enabled"`
+	Binary  string `koanf:"binary"`
 }
 
 // VNStatConfig configures optional vnStat bandwidth reporting.
@@ -97,7 +104,7 @@ func Load(args []string) (*Config, *pflag.FlagSet, error) {
 	k := koanf.New(configDelim)
 
 	defaults := map[string]any{
-		"server.addr":                        ":8080",
+		"server.addr":                        "127.0.0.1:8080",
 		"server.http_log":                    false,
 		"server.trusted_proxies":             []string{},
 		"server.refresh.traffic_interval_ms": 2000,
@@ -113,6 +120,8 @@ func Load(args []string) (*Config, *pflag.FlagSet, error) {
 		"vnstat.enabled":                     true,
 		"vnstat.binary":                      "vnstat",
 		"vnstat.interface":                   "",
+		"qos.enabled":                        true,
+		"qos.binary":                         "pfctl",
 		"auth.mode":                          "none",
 		"auth.oidc.provider_url":             "",
 		"auth.oidc.client_id":                "",
@@ -154,6 +163,8 @@ func Load(args []string) (*Config, *pflag.FlagSet, error) {
 	flagSet.Bool("vnstat.enabled", defaults["vnstat.enabled"].(bool), "enable optional vnStat bandwidth data when available")
 	flagSet.String("vnstat.binary", defaults["vnstat.binary"].(string), "vnStat executable path or name")
 	flagSet.String("vnstat.interface", defaults["vnstat.interface"].(string), "optional vnStat interface to show")
+	flagSet.Bool("qos.enabled", defaults["qos.enabled"].(bool), "enable optional PF/ALTQ QoS monitoring")
+	flagSet.String("qos.binary", defaults["qos.binary"].(string), "pfctl executable path or name for QoS monitoring")
 	flagSet.String("auth.mode", defaults["auth.mode"].(string), "authentication mode (none|oidc)")
 	flagSet.String("auth.oidc.provider_url", defaults["auth.oidc.provider_url"].(string), "OIDC provider discovery URL")
 	flagSet.String("auth.oidc.client_id", defaults["auth.oidc.client_id"].(string), "OIDC client ID")
@@ -244,6 +255,10 @@ func Load(args []string) (*Config, *pflag.FlagSet, error) {
 		cfg.VNStat.Binary = defaults["vnstat.binary"].(string)
 	}
 	cfg.VNStat.Interface = strings.TrimSpace(cfg.VNStat.Interface)
+	cfg.QoS.Binary = strings.TrimSpace(cfg.QoS.Binary)
+	if cfg.QoS.Binary == "" {
+		cfg.QoS.Binary = defaults["qos.binary"].(string)
+	}
 
 	return &cfg, flagSet, nil
 }
@@ -288,6 +303,8 @@ var envKeyMappings = map[string]string{
 	"VNSTAT_ENABLED":                     "vnstat.enabled",
 	"VNSTAT_BINARY":                      "vnstat.binary",
 	"VNSTAT_INTERFACE":                   "vnstat.interface",
+	"QOS_ENABLED":                        "qos.enabled",
+	"QOS_BINARY":                         "qos.binary",
 	"FIREWALL_CACHE_TTL_MS":              "firewall.cache_ttl_ms",
 	"FIREWALL_COMMAND_TIMEOUT_MS":        "firewall.command_timeout_ms",
 	"FIREWALL_MAX_CONCURRENT_COMMANDS":   "firewall.max_concurrent_commands",

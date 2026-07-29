@@ -21,7 +21,7 @@ supported as an experimental backend and has less feature coverage.
 - Go 1.25+
 - Node.js 20.19+ or 22.12+
 - `npm`
-- GNU Make
+- [`just`](https://github.com/casey/just) command runner
 
 Runtime dependencies depend on the selected backend:
 
@@ -36,13 +36,16 @@ Runtime dependencies depend on the selected backend:
 Build the UI and server from the repository root:
 
 ```bash
-make build
+just build
 ./pf-dashboard
 ```
 
 Open `http://localhost:8080`.
 
-`make build` runs the frontend build and embeds `ui/dist` into the binary. For
+The server binds to `127.0.0.1:8080` by default. To expose it through a reverse
+proxy or on another interface, set `server.addr` explicitly.
+
+`just build` runs the frontend build and embeds `ui/dist` into the binary. For
 frontend-only development, start Vite separately:
 
 ```bash
@@ -56,15 +59,31 @@ The Vite development server proxies `/api` requests to the Go server.
 ## Common Commands
 
 ```bash
-make build           # build the UI and application binary
-make test            # build the UI and run Go tests
-make run             # build and start the application
-make build-linux     # cross-compile a Linux amd64 binary
-make build-freebsd   # cross-compile a FreeBSD amd64 binary
-make release-tarball # create a source tarball with embedded UI assets
-make docker-test     # run tests in the Docker test stage
-make docker-build    # build the release Docker image
+just build           # build the UI and application binary
+just test            # build the UI and run Go tests
+just run             # build and start the application
+just build-linux     # cross-compile a Linux amd64 binary
+just build-freebsd   # cross-compile a FreeBSD amd64 binary
+just screenshots     # regenerate README/marketing screenshots with fake data
+just release-tarball # create a source tarball with embedded UI assets
+just docker-test     # run tests in the Docker test stage
+just docker-build    # build the release Docker image
 ```
+
+## Screenshots
+
+The screenshot suite renders deterministic fake firewall data in headless
+Chrome. It also checks each rendered page for fixture-specific content before
+writing the image, making it useful as a lightweight browser integration test.
+
+![PF traffic overview](docs/screenshots/traffic-overview.png)
+
+| WAN bandwidth | PF/ALTQ QoS |
+| --- | --- |
+| ![WAN bandwidth](docs/screenshots/wan-bandwidth.png) | ![PF ALTQ queues](docs/screenshots/qos-queues.png) |
+
+Run `just screenshots` to regenerate every image. Set `CHROME_BIN` if Chrome or
+Chromium is not available under a common executable name.
 
 ## Configuration
 
@@ -148,6 +167,10 @@ pflog_path = "/var/pf/pflog"
 
 [vnstat]
 interface = "em0"
+
+[qos]
+# Read-only PF/ALTQ queue monitoring. Enabled by default when supported.
+enabled = true
 ```
 
 The FreeBSD example is also available at
@@ -278,6 +301,11 @@ Blocked traffic is available only for PF rules that include the `log` option,
 for example `block log all`. A plain `block all` rule will block packets but
 will not produce entries for the dashboard to display.
 
+Blocked traffic rows can generate a narrowly scoped `pass ... quick` suggestion
+for copying into a PF configuration. Review the generated interface, direction,
+addresses, destination port, and rule ordering before applying it; the dashboard
+never changes PF configuration itself.
+
 PF log collection defaults to `firewall.pf.blocked_source=auto`: it reads live
 blocks from `pflog0` and merges them with `/var/log/pflog` when the capture
 file exists. Set the source to `live` to use only the configured
@@ -294,12 +322,22 @@ subcommand, including the live blocked collector and browser traffic streams.
 When `vnstat` is installed, the dashboard adds a live-refreshing Bandwidth tab
 with interface totals, the latest five-minute RX/TX rate, and a graph of up to
 four hours of five-minute samples. The graph is shown only when vnStat has
-history for the selected interface. The tab is absent when the executable is
-not available. Start `vnstatd` so its database is populated, then optionally
-limit the tab to one interface with `vnstat.interface` (or
+history for the selected interface. Interfaces can be viewed individually,
+bookmarked, or browsed using the WAN and LAN/VLAN filters. The tab is absent
+when the executable is not available. Start `vnstatd` so its database is
+populated, then optionally limit collection to one interface with `vnstat.interface` (or
 `PFCTL_DASHBOARD_VNSTAT_INTERFACE`). Set `vnstat.enabled=false` to disable the
 integration. The refresh cadence follows `server.refresh.traffic_interval_ms`;
 the displayed rates remain five-minute averages provided by vnStat.
+
+### QoS Monitoring
+
+On FreeBSD PF systems with ALTQ queue reporting, the dashboard adds a
+live-refreshing QoS tab. It runs `pfctl -s queue -v` read-only and displays each
+queue's configured bandwidth, scheduler, packet and byte counters, drops, and
+current queue depth. The tab is hidden when the platform or kernel does not
+support the command. Set `qos.enabled=false` to disable probing and collection,
+or set `qos.binary` when `pfctl` is outside the service's `PATH`.
 
 ## Deployment and Packaging
 

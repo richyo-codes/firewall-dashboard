@@ -12,3 +12,7 @@ pflog_path = "/var/log/pflog"
 [vnstat]
 # enabled = true
 # interface = "em0"
+
+[qos]
+# Read-only PF/ALTQ queue statistics via pfctl -s queue -v.
+# enabled = true

@@ -14,8 +14,14 @@ func TestLoadSecurityAndResourceControls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if cfg.Server.Addr != "127.0.0.1:8080" {
+		t.Fatalf("server address default = %q", cfg.Server.Addr)
+	}
 	if cfg.Firewall.CommandTimeoutMs <= 0 || cfg.Firewall.MaxConcurrentCommands <= 0 || cfg.Firewall.MaxStreams <= 0 {
 		t.Fatalf("invalid resource-control defaults: %#v", cfg.Firewall)
+	}
+	if !cfg.QoS.Enabled || cfg.QoS.Binary != "pfctl" {
+		t.Fatalf("invalid QoS defaults: %#v", cfg.QoS)
 	}
 	if len(cfg.Server.TrustedProxies) != 2 {
 		t.Fatalf("trusted proxies = %#v", cfg.Server.TrustedProxies)

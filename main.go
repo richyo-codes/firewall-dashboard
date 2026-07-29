@@ -25,6 +25,7 @@ import (
 	"pfctl-golang/internal/config"
 	"pfctl-golang/internal/firewall"
 	"pfctl-golang/internal/providers"
+	"pfctl-golang/internal/qos"
 	"pfctl-golang/internal/vnstat"
 )
 
@@ -39,6 +40,7 @@ type server struct {
 	backend           string
 	trafficIntervalMs int
 	vnstat            *vnstat.Provider
+	qos               *qos.Provider
 }
 
 func main() {
@@ -88,6 +90,10 @@ func main() {
 	if err != nil {
 		logger.Fatalf("failed to initialize vnStat integration: %v", err)
 	}
+	qosProvider, err := qos.New(cfg.QoS.Enabled, resolvedBackend, cfg.QoS.Binary, cfg.Firewall.Debug)
+	if err != nil {
+		logger.Fatalf("failed to initialize QoS integration: %v", err)
+	}
 
 	authContext, cancelAuth := context.WithTimeout(context.Background(), 15*time.Second)
 	authManager, err := auth.NewManager(authContext, cfg.Auth, logger)
@@ -103,6 +109,7 @@ func main() {
 		backend:           resolvedBackend,
 		trafficIntervalMs: cfg.Server.Refresh.TrafficIntervalMs,
 		vnstat:            bandwidth,
+		qos:               qosProvider,
 	}
 
 	apiMux := http.NewServeMux()
@@ -111,6 +118,7 @@ func main() {
 	apiMux.Handle("GET /api/traffic", withJSON(logger, srv.combinedTraffic))
 	apiMux.Handle("GET /api/rules", withJSON(logger, srv.ruleCounters))
 	apiMux.Handle("GET /api/bandwidth", withJSON(logger, srv.bandwidth))
+	apiMux.Handle("GET /api/qos", withJSON(logger, srv.qosReport))
 	apiMux.Handle("GET /api/stream/traffic", http.HandlerFunc(srv.streamTraffic))
 
 	mux := http.NewServeMux()
@@ -435,6 +443,13 @@ func (s *server) bandwidth(r *http.Request) (any, error) {
 	return s.vnstat.Report(r.Context())
 }
 
+func (s *server) qosReport(r *http.Request) (any, error) {
+	if s.qos == nil {
+		return nil, errors.New("QoS integration is unavailable")
+	}
+	return s.qos.Report(r.Context())
+}
+
 func (s *server) streamTraffic(w http.ResponseWriter, r *http.Request) {
 	streamer, ok := s.provider.(firewall.StreamProvider)
 	if !ok {
@@ -477,6 +492,7 @@ func (s *server) refreshConfig(*http.Request) (any, error) {
 	supportsBlockedPacketDetails := s.backend == "pf"
 	supportsTrafficStream := s.backend == "pf"
 	supportsBandwidth := s.vnstat != nil
+	supportsQoS := s.qos != nil
 	return map[string]any{
 		"trafficIntervalMs":            s.trafficIntervalMs,
 		"backend":                      s.backend,
@@ -486,5 +502,6 @@ func (s *server) refreshConfig(*http.Request) (any, error) {
 		"supportsTrafficStream":        supportsTrafficStream,
 		"supportsRuleCounters":         true,
 		"supportsBandwidth":            supportsBandwidth,
+		"supportsQoS":                  supportsQoS,
 	}, nil
 }

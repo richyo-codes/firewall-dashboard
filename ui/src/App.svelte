@@ -36,7 +36,21 @@ type PacketLogEntry = {
     tx: number;
   };
 
-  type Page = "traffic" | "combined" | "rules" | "bandwidth";
+  type QoSQueue = {
+    name: string;
+    interface?: string;
+    parent?: string;
+    bandwidth?: string;
+    scheduler?: string;
+    packets: number;
+    bytes: number;
+    droppedPackets: number;
+    droppedBytes: number;
+    queueLength: number;
+    queueLimit: number;
+  };
+
+  type Page = "traffic" | "combined" | "rules" | "bandwidth" | "qos";
 
   type SortDirection = "asc" | "desc";
   type PacketColumn = "timestamp" | "action" | "interface" | "source" | "dest" | "protocol" | "reason" | "direction" | "ruleId";
@@ -66,6 +80,10 @@ type PacketLogEntry = {
       title: "Bandwidth",
       description: "Live-refreshing five-minute RX/TX averages from vnStat.",
     },
+    qos: {
+      title: "Quality of Service",
+      description: "Live PF/ALTQ queue backlog and drop counters.",
+    },
   };
 
   const HASH_TO_PAGE: Record<string, Page> = {
@@ -73,6 +91,7 @@ type PacketLogEntry = {
     "#combined": "combined",
     "#rules": "rules",
     "#bandwidth": "bandwidth",
+    "#qos": "qos",
   };
 
   let activePage: Page = "traffic";
@@ -82,6 +101,7 @@ type PacketLogEntry = {
   let streamViewEnabled = true;
   let rulesViewEnabled = true;
   let bandwidthViewEnabled = false;
+  let qosViewEnabled = false;
   let autoRefreshTraffic = true;
   let paused = false;
   let trafficIntervalMs = 2000;
@@ -94,6 +114,9 @@ type PacketLogEntry = {
 let combined: PacketLogEntry[] = [];
 let rules: RuleCounter[] = [];
   let bandwidth: BandwidthInterface[] = [];
+  let bandwidthFilter = "all";
+  let qosBackend = "";
+  let qosQueues: QoSQueue[] = [];
 
 let combinedStreamController: AbortController | null = null;
 let combinedStreaming = false;
@@ -123,12 +146,18 @@ let combinedStreamTask: Promise<void> | null = null;
   let bandwidthError: string | null = null;
   let bandwidthLastUpdated: Date | null = null;
   let bandwidthLoaded = false;
+  let qosLoading = false;
+  let qosError: string | null = null;
+  let qosLastUpdated: Date | null = null;
+  let qosLoaded = false;
   let ruleSearch = "";
   let ruleLabelFilter = "";
   let ruleIdFilter = "";
   let evaluationsFilter = "";
   let packetsFilter = "";
   let bytesFilter = "";
+  let passRuleNotice = "";
+  let passRulePreview = "";
 
   $: currentLoading =
     activePage === "traffic"
@@ -137,6 +166,8 @@ let combinedStreamTask: Promise<void> | null = null;
         ? combinedLoading
         : activePage === "bandwidth"
           ? bandwidthLoading
+          : activePage === "qos"
+            ? qosLoading
           : rulesLoading;
   $: currentError =
     activePage === "traffic"
@@ -145,6 +176,8 @@ let combinedStreamTask: Promise<void> | null = null;
         ? combinedError
         : activePage === "bandwidth"
           ? bandwidthError
+          : activePage === "qos"
+            ? qosError
           : rulesError;
   $: currentLastUpdated =
     activePage === "traffic"
@@ -153,22 +186,43 @@ let combinedStreamTask: Promise<void> | null = null;
         ? combinedLastUpdated
         : activePage === "bandwidth"
           ? bandwidthLastUpdated
+          : activePage === "qos"
+            ? qosLastUpdated
           : rulesLastUpdated;
 
-  onMount(() => {
-    if (typeof window !== "undefined") {
-      const [pageHash, query = ""] = window.location.hash.split("?", 2);
-      const initial = HASH_TO_PAGE[pageHash.toLowerCase()];
-      if (initial) {
-        activePage = initial;
-      }
-      const ruleID = new URLSearchParams(query).get("rule");
-      if (initial === "rules" && ruleID && /^\d+$/.test(ruleID)) {
-        ruleIdFilter = ruleID;
-      }
+  function syncPageFromHash() {
+    if (typeof window === "undefined") return;
+    const [pageHash, query = ""] = window.location.hash.split("?", 2);
+    const page = HASH_TO_PAGE[pageHash.toLowerCase()] ?? "traffic";
+    if (page === "combined" && !unifiedViewEnabled) return;
+    if (page === "rules" && !rulesViewEnabled) return;
+    if (page === "bandwidth" && !bandwidthViewEnabled) return;
+    if (page === "qos" && !qosViewEnabled) return;
+
+    if (activePage === "combined" && page !== "combined") stopCombinedStream();
+    activePage = page;
+    const ruleID = new URLSearchParams(query).get("rule");
+    ruleIdFilter = page === "rules" && ruleID && /^\d+$/.test(ruleID) ? ruleID : "";
+    const params = new URLSearchParams(query);
+    const interfaceName = params.get("interface");
+    const group = params.get("group");
+    if (page === "bandwidth") {
+      bandwidthFilter = interfaceName ? `interface:${interfaceName}` : group === "wan" || group === "lan-vlan" ? group : "all";
     }
 
+    if (paused) return;
+    if (page === "traffic") loadTraffic();
+    if (page === "combined") startCombinedStream();
+    if (page === "rules") loadRules();
+    if (page === "bandwidth") loadBandwidth();
+    if (page === "qos") loadQoS();
+    scheduleTrafficRefresh();
+  }
+
+  onMount(() => {
     loadRefreshConfig().finally(() => {
+      syncPageFromHash();
+      window.addEventListener("hashchange", syncPageFromHash);
       if (!unifiedViewEnabled && activePage === "combined") {
         activePage = "traffic";
         if (typeof window !== "undefined") {
@@ -184,6 +238,8 @@ let combinedStreamTask: Promise<void> | null = null;
         startCombinedStream();
       } else if (activePage === "bandwidth") {
         loadBandwidth();
+      } else if (activePage === "qos") {
+        loadQoS();
       } else {
         loadTraffic();
       }
@@ -197,6 +253,9 @@ let combinedStreamTask: Promise<void> | null = null;
       trafficTimer = null;
     }
     stopCombinedStream();
+    if (typeof window !== "undefined") {
+      window.removeEventListener("hashchange", syncPageFromHash);
+    }
   });
 
   function toString(value: unknown): string {
@@ -368,6 +427,7 @@ function packetKey(entry: PacketLogEntry): string {
         supportsTrafficStream?: boolean;
         supportsRuleCounters?: boolean;
         supportsBandwidth?: boolean;
+        supportsQoS?: boolean;
       };
       if (data?.trafficIntervalMs && data.trafficIntervalMs > 0) {
         trafficIntervalMs = data.trafficIntervalMs;
@@ -381,6 +441,7 @@ function packetKey(entry: PacketLogEntry): string {
       streamViewEnabled = data?.supportsTrafficStream === true || backend === "pf";
       rulesViewEnabled = data?.supportsRuleCounters !== false;
       bandwidthViewEnabled = data?.supportsBandwidth === true;
+      qosViewEnabled = data?.supportsQoS === true;
     } catch (err) {
       console.warn("failed to load refresh config", err);
     }
@@ -409,6 +470,13 @@ function packetKey(entry: PacketLogEntry): string {
     }),
     rulesSort,
   );
+  $: bandwidthView = bandwidth.filter((iface) => {
+    if (bandwidthFilter === "all") return true;
+    if (bandwidthFilter === "wan") return bandwidthInterfaceGroup(iface) === "wan";
+    if (bandwidthFilter === "lan-vlan") return bandwidthInterfaceGroup(iface) === "lan-vlan";
+    if (bandwidthFilter.startsWith("interface:")) return iface.name === bandwidthFilter.slice("interface:".length);
+    return true;
+  });
 
   function updateSort<C extends string>(state: SortState<C>, column: C): SortState<C> {
     if (state.column === column) {
@@ -573,6 +641,31 @@ function packetKey(entry: PacketLogEntry): string {
         };
       })
       .filter((iface) => iface.name !== "");
+  }
+
+  function normalizeQoS(data: unknown): { backend: string; queues: QoSQueue[] } {
+    if (!data || typeof data !== "object") return { backend: "", queues: [] };
+    const report = data as Record<string, unknown>;
+    const rawQueues = Array.isArray(report.queues) ? report.queues : [];
+    return {
+      backend: toString(report.backend),
+      queues: rawQueues
+        .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+        .map((item) => ({
+          name: toString(item.name),
+          interface: toString(item.interface) || undefined,
+          parent: toString(item.parent) || undefined,
+          bandwidth: toString(item.bandwidth) || undefined,
+          scheduler: toString(item.scheduler) || undefined,
+          packets: toNumber(item.packets),
+          bytes: toNumber(item.bytes),
+          droppedPackets: toNumber(item.droppedPackets),
+          droppedBytes: toNumber(item.droppedBytes),
+          queueLength: toNumber(item.queueLength),
+          queueLimit: toNumber(item.queueLimit),
+        }))
+        .filter((queue) => queue.name !== ""),
+    };
   }
 
   async function fetchJSON(path: string): Promise<unknown> {
@@ -754,6 +847,24 @@ function packetKey(entry: PacketLogEntry): string {
     }
   }
 
+  async function loadQoS(force = false) {
+    if (paused || qosLoading || (qosLoaded && !force)) return;
+    qosLoading = true;
+    qosError = null;
+    try {
+      const report = normalizeQoS(await fetchJSON("/api/qos"));
+      qosBackend = report.backend;
+      qosQueues = report.queues;
+      qosLastUpdated = new Date();
+      qosLoaded = true;
+    } catch (err) {
+      qosError = err instanceof Error ? err.message : "unknown error";
+      qosLoaded = false;
+    } finally {
+      qosLoading = false;
+    }
+  }
+
   function refreshActive() {
     if (paused) return;
     if (activePage === "traffic") {
@@ -762,6 +873,8 @@ function packetKey(entry: PacketLogEntry): string {
       startCombinedStream(true);
     } else if (activePage === "bandwidth") {
       loadBandwidth(true);
+    } else if (activePage === "qos") {
+      loadQoS(true);
     } else {
       loadRules(true);
     }
@@ -775,12 +888,14 @@ function packetKey(entry: PacketLogEntry): string {
     if (paused) {
       return;
     }
-    if (autoRefreshTraffic && (activePage === "traffic" || activePage === "bandwidth")) {
+    if (autoRefreshTraffic && (activePage === "traffic" || activePage === "bandwidth" || activePage === "qos")) {
       trafficTimer = setInterval(() => {
         if (activePage === "traffic" && !paused) {
           loadTraffic();
         } else if (activePage === "bandwidth" && !paused) {
           loadBandwidth(true);
+        } else if (activePage === "qos" && !paused) {
+          loadQoS(true);
         }
       }, trafficIntervalMs);
     }
@@ -798,7 +913,15 @@ function packetKey(entry: PacketLogEntry): string {
     if (page === "bandwidth" && !bandwidthViewEnabled) {
       page = "traffic";
     }
-    if (activePage === page) return;
+    if (page === "qos" && !qosViewEnabled) {
+      page = "traffic";
+    }
+    if (activePage === page) {
+      if (typeof window !== "undefined" && window.location.hash !== `#${page}`) {
+        window.location.hash = `#${page}`;
+      }
+      return;
+    }
     if (activePage === "combined") {
       stopCombinedStream();
     }
@@ -822,6 +945,9 @@ function packetKey(entry: PacketLogEntry): string {
       if (page === "bandwidth" && !bandwidthLoaded) {
         loadBandwidth();
       }
+      if (page === "qos" && !qosLoaded) {
+        loadQoS();
+      }
     }
     scheduleTrafficRefresh();
   }
@@ -842,6 +968,61 @@ function packetKey(entry: PacketLogEntry): string {
     scheduleTrafficRefresh();
   }
 
+  type PFEndpoint = { address: string; port?: string };
+
+  function parsePFEndpoint(value: string): PFEndpoint | null {
+    const endpoint = value.trim();
+    const bracketed = endpoint.match(/^\[([^\]]+)\]\.(\d{1,5})$/);
+    if (bracketed) return { address: bracketed[1], port: bracketed[2] };
+
+    const ipv4WithPort = endpoint.match(/^((?:\d{1,3}\.){3}\d{1,3})\.(\d{1,5})$/);
+    if (ipv4WithPort) return { address: ipv4WithPort[1], port: ipv4WithPort[2] };
+
+    if (/^[A-Fa-f0-9:.]+$/.test(endpoint)) return { address: endpoint };
+    return null;
+  }
+
+  function buildPassRule(entry: PacketLogEntry): string | null {
+    const direction = (entry.direction ?? "").toLowerCase();
+    const protocol = (entry.protocol ?? "").toLowerCase();
+    const iface = (entry.interface ?? "").trim();
+    const source = parsePFEndpoint(entry.source ?? "");
+    const destination = parsePFEndpoint(entry.dest ?? "");
+    if (!source || !destination || !/^(in|out)$/.test(direction) || !/^[A-Za-z0-9_.:-]+$/.test(iface)) {
+      return null;
+    }
+
+    const sourceIPv6 = source.address.includes(":");
+    const destinationIPv6 = destination.address.includes(":");
+    if (sourceIPv6 !== destinationIPv6) return null;
+
+    const parts = ["pass", direction, "quick", "on", iface, sourceIPv6 ? "inet6" : "inet"];
+    if (["tcp", "udp", "icmp", "gre"].includes(protocol)) {
+      parts.push("proto", protocol);
+    }
+    parts.push("from", source.address, "to", destination.address);
+    if (destination.port && (protocol === "tcp" || protocol === "udp")) {
+      parts.push("port", destination.port);
+    }
+    return parts.join(" ");
+  }
+
+  async function copyPassRule(entry: PacketLogEntry) {
+    const rule = buildPassRule(entry);
+    if (!rule) {
+      passRulePreview = "";
+      passRuleNotice = "Unable to derive a safe PF pass rule from this traffic entry.";
+      return;
+    }
+    passRulePreview = rule;
+    try {
+      await navigator.clipboard.writeText(rule);
+      passRuleNotice = "Pass rule copied. Review its scope and placement before applying it.";
+    } catch {
+      passRuleNotice = "Copy was unavailable. Select the rule below and copy it manually.";
+    }
+  }
+
   function togglePause() {
     paused = !paused;
     if (paused) {
@@ -859,6 +1040,8 @@ function packetKey(entry: PacketLogEntry): string {
         loadRules(true);
       } else if (activePage === "bandwidth") {
         loadBandwidth(true);
+      } else if (activePage === "qos") {
+        loadQoS(true);
       }
       scheduleTrafficRefresh();
     }
@@ -886,6 +1069,31 @@ function packetKey(entry: PacketLogEntry): string {
 
   function formatRate(bytesPerSecond: number) {
     return `${formatBytes(bytesPerSecond)}/s`;
+  }
+
+  function queueDepth(queue: QoSQueue) {
+    if (queue.queueLimit <= 0) return 0;
+    return Math.min(100, (queue.queueLength / queue.queueLimit) * 100);
+  }
+
+  function bandwidthInterfaceGroup(iface: BandwidthInterface): "wan" | "lan-vlan" | "other" {
+    const label = `${iface.name} ${iface.alias ?? ""}`.toLowerCase();
+    if (/(^|[^a-z])wan(?:\d+)?([^a-z]|$)/.test(label)) return "wan";
+    if (/(^|[^a-z])(lan|vlan)(?:\d+)?([^a-z]|$)/.test(label) || iface.name.includes(".")) return "lan-vlan";
+    return "other";
+  }
+
+  function setBandwidthFilter(filter: string) {
+    bandwidthFilter = filter;
+    if (typeof window === "undefined") return;
+    if (filter.startsWith("interface:")) {
+      const params = new URLSearchParams({ interface: filter.slice("interface:".length) });
+      window.location.hash = `#bandwidth?${params.toString()}`;
+    } else if (filter === "wan" || filter === "lan-vlan") {
+      window.location.hash = `#bandwidth?group=${filter}`;
+    } else {
+      window.location.hash = "#bandwidth";
+    }
   }
 
   function bandwidthGraphMax(samples: BandwidthSample[]) {
@@ -917,7 +1125,7 @@ function packetKey(entry: PacketLogEntry): string {
         </p>
       </div>
       <div class="flex flex-wrap items-center justify-end gap-4">
-        {#if activePage === "traffic" || activePage === "bandwidth"}
+        {#if activePage === "traffic" || activePage === "bandwidth" || activePage === "qos"}
           <label class="flex items-center gap-2 text-xs text-slate-400">
             <input
               type="checkbox"
@@ -1031,12 +1239,34 @@ function packetKey(entry: PacketLogEntry): string {
           Bandwidth
         </button>
       {/if}
+      {#if qosViewEnabled}
+        <button
+          class={`rounded px-3 py-1 text-sm font-medium transition ${
+            activePage === "qos"
+              ? "bg-slate-800 text-slate-100"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+          on:click={() => setActivePage("qos")}
+          type="button"
+        >
+          QoS
+        </button>
+      {/if}
     </nav>
   </header>
 
   {#if currentError}
     <div class="rounded border border-rose-700 bg-rose-950/40 p-4 text-sm text-rose-200">
       {currentError}
+    </div>
+  {/if}
+
+  {#if passRuleNotice}
+    <div class="rounded border border-amber-700 bg-amber-950/30 p-4 text-sm text-amber-100">
+      <p>{passRuleNotice}</p>
+      {#if passRulePreview}
+        <code class="mt-2 block select-all overflow-x-auto rounded bg-slate-950/70 p-2 text-xs text-amber-50">{passRulePreview}</code>
+      {/if}
     </div>
   {/if}
 
@@ -1089,12 +1319,13 @@ function packetKey(entry: PacketLogEntry): string {
                     Rule <span>{sortIndicator(blockedSort, "ruleId")}</span>
                   </button>
                 </th>
+                <th class="py-2 pr-4">Pass Rule</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-900/60 text-slate-200">
               {#if blockedView.length === 0}
                 <tr>
-                  <td colspan="7" class="py-6 text-center text-sm text-slate-500">
+                  <td colspan="8" class="py-6 text-center text-sm text-slate-500">
                     No blocked packets reported.
                   </td>
                 </tr>
@@ -1124,6 +1355,20 @@ function packetKey(entry: PacketLogEntry): string {
                           title={`Open rule ${entry.ruleId} in Rule Counters`}
                         >
                           #{entry.ruleId}
+                        </button>
+                      {:else}
+                        <span class="text-slate-600">—</span>
+                      {/if}
+                    </td>
+                    <td class="py-2 pr-4 text-xs">
+                      {#if buildPassRule(entry)}
+                        <button
+                          type="button"
+                          class="rounded border border-amber-700/80 px-2 py-1 text-amber-200 hover:border-amber-400 hover:text-amber-100"
+                          on:click={() => copyPassRule(entry)}
+                          title="Copy a narrowly scoped PF pass-rule suggestion"
+                        >
+                          Copy pass rule
                         </button>
                       {:else}
                         <span class="text-slate-600">—</span>
@@ -1348,17 +1593,67 @@ function packetKey(entry: PacketLogEntry): string {
     </section>
   {:else if activePage === "bandwidth"}
     <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-6">
-      <div class="mb-4 flex items-center justify-between">
-        <h2 class="text-lg font-semibold text-slate-100">vnStat Interface Usage</h2>
-        <span class="text-xs text-slate-400">Live refresh uses vnStat five-minute averages.</span>
+      <div class="mb-5 flex flex-col gap-4">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 class="text-lg font-semibold text-slate-100">vnStat Interface Usage</h2>
+          <span class="text-xs text-slate-400">Live refresh uses vnStat five-minute averages.</span>
+        </div>
+        {#if bandwidth.length > 0}
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              class={`rounded-lg border px-3 py-2 text-xs ${bandwidthFilter === "all" ? "border-cyan-400 bg-cyan-500/10 text-cyan-200" : "border-slate-700 text-slate-400 hover:border-slate-500"}`}
+              on:click={() => setBandwidthFilter("all")}
+            >
+              All interfaces
+            </button>
+            <button
+              type="button"
+              class={`rounded-lg border px-3 py-2 text-xs ${bandwidthFilter === "wan" ? "border-cyan-400 bg-cyan-500/10 text-cyan-200" : "border-slate-700 text-slate-400 hover:border-slate-500"}`}
+              on:click={() => setBandwidthFilter("wan")}
+            >
+              WAN
+            </button>
+            <button
+              type="button"
+              class={`rounded-lg border px-3 py-2 text-xs ${bandwidthFilter === "lan-vlan" ? "border-cyan-400 bg-cyan-500/10 text-cyan-200" : "border-slate-700 text-slate-400 hover:border-slate-500"}`}
+              on:click={() => setBandwidthFilter("lan-vlan")}
+            >
+              LANs / VLANs
+            </button>
+            <label class="ml-auto flex items-center gap-2 text-xs text-slate-500">
+              Interface
+              <select
+                class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-200 focus:border-cyan-400 focus:outline-none"
+                value={bandwidthFilter.startsWith("interface:") ? bandwidthFilter : ""}
+                on:change={(event) => setBandwidthFilter(event.currentTarget.value || "all")}
+              >
+                <option value="">Choose one…</option>
+                {#each bandwidth as iface}
+                  <option value={`interface:${iface.name}`}>{iface.name}{iface.alias ? ` (${iface.alias})` : ""}</option>
+                {/each}
+              </select>
+            </label>
+          </div>
+        {/if}
       </div>
       {#if bandwidth.length === 0}
         <p class="py-6 text-center text-sm text-slate-500">{bandwidthLoading ? "Loading bandwidth…" : "No vnStat interface data available."}</p>
+      {:else if bandwidthView.length === 0}
+        <div class="rounded-lg border border-dashed border-slate-700 py-8 text-center">
+          <p class="text-sm text-slate-400">No interfaces match this view.</p>
+          <button type="button" class="mt-3 text-xs text-cyan-300 hover:text-cyan-100" on:click={() => setBandwidthFilter("all")}>Show all interfaces</button>
+        </div>
       {:else}
-        <div class="grid gap-4 md:grid-cols-2">
-          {#each bandwidth as iface}
+        <div class={`grid gap-4 ${bandwidthView.length === 1 ? "grid-cols-1" : "md:grid-cols-2"}`}>
+          {#each bandwidthView as iface}
             <article class="rounded-lg border border-slate-800 bg-slate-950/50 p-4">
-              <h3 class="font-mono text-base text-cyan-200">{iface.name}{iface.alias ? ` (${iface.alias})` : ""}</h3>
+              <div class="flex items-center justify-between gap-3">
+                <h3 class="font-mono text-base text-cyan-200">{iface.name}{iface.alias ? ` (${iface.alias})` : ""}</h3>
+                {#if bandwidthView.length > 1}
+                  <button type="button" class="text-xs text-slate-500 hover:text-cyan-200" on:click={() => setBandwidthFilter(`interface:${iface.name}`)}>View alone</button>
+                {/if}
+              </div>
               <dl class="mt-4 grid grid-cols-2 gap-3 text-sm">
                 <div><dt class="text-slate-500">Total RX</dt><dd class="text-slate-100">{formatBytes(iface.total.rx)}</dd></div>
                 <div><dt class="text-slate-500">Total TX</dt><dd class="text-slate-100">{formatBytes(iface.total.tx)}</dd></div>
@@ -1381,6 +1676,53 @@ function packetKey(entry: PacketLogEntry): string {
                   <div class="mt-2 flex gap-4 text-xs">
                     <span class="text-emerald-300">RX peak {formatRate(Math.max(...iface.history.map((sample) => sample.rx)) / 300)}</span>
                     <span class="text-sky-300">TX peak {formatRate(Math.max(...iface.history.map((sample) => sample.tx)) / 300)}</span>
+                  </div>
+                </div>
+              {/if}
+            </article>
+          {/each}
+        </div>
+      {/if}
+    </section>
+  {:else if activePage === "qos"}
+    <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-6">
+      <div class="mb-5 flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-lg font-semibold text-slate-100">PF/ALTQ Queues</h2>
+        <span class="rounded-full bg-cyan-500/10 px-3 py-1 text-xs text-cyan-200">{qosBackend || "pf-altq"}</span>
+      </div>
+      {#if qosQueues.length === 0}
+        <p class="py-6 text-center text-sm text-slate-500">
+          {qosLoading ? "Loading QoS queues…" : "No ALTQ queues are currently configured."}
+        </p>
+      {:else}
+        <div class="grid gap-4 md:grid-cols-2">
+          {#each qosQueues as queue}
+            <article class="rounded-lg border border-slate-800 bg-slate-950/50 p-4">
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <h3 class="font-mono text-base text-cyan-200">{queue.name}</h3>
+                  <p class="mt-1 text-xs text-slate-500">
+                    {[queue.interface, queue.parent ? `parent ${queue.parent}` : "", queue.scheduler?.toUpperCase()].filter(Boolean).join(" · ")}
+                  </p>
+                </div>
+                {#if queue.bandwidth}
+                  <span class="rounded bg-slate-800 px-2 py-1 font-mono text-xs text-slate-300">{queue.bandwidth}</span>
+                {/if}
+              </div>
+              <dl class="mt-4 grid grid-cols-2 gap-3 text-sm">
+                <div><dt class="text-slate-500">Packets</dt><dd class="text-slate-100">{queue.packets.toLocaleString()}</dd></div>
+                <div><dt class="text-slate-500">Traffic</dt><dd class="text-slate-100">{formatBytes(queue.bytes)}</dd></div>
+                <div><dt class="text-slate-500">Dropped</dt><dd class={queue.droppedPackets > 0 ? "text-rose-300" : "text-emerald-300"}>{queue.droppedPackets.toLocaleString()} packets</dd></div>
+                <div><dt class="text-slate-500">Drop bytes</dt><dd class={queue.droppedBytes > 0 ? "text-rose-300" : "text-slate-100"}>{formatBytes(queue.droppedBytes)}</dd></div>
+              </dl>
+              {#if queue.queueLimit > 0}
+                <div class="mt-4">
+                  <div class="mb-1 flex justify-between text-xs text-slate-500">
+                    <span>Queue depth</span>
+                    <span>{queue.queueLength} / {queue.queueLimit}</span>
+                  </div>
+                  <div class="h-2 overflow-hidden rounded-full bg-slate-800">
+                    <div class="h-full rounded-full bg-cyan-400" style={`width: ${queueDepth(queue)}%`}></div>
                   </div>
                 </div>
               {/if}
