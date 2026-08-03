@@ -21,10 +21,10 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: apt update
+      - name: Install build tools
         run: |
             sudo apt update
-            sudo apt-get install -y git
+            sudo apt-get install -y git just
 
       - name: Git describe
         id: ghd
@@ -63,33 +63,25 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install UI dependencies
-        working-directory: ui
-        run: npm install
-
-      - name: Build UI
-        working-directory: ui
-        run: npm run build
-
       - name: Go Mod Tidy Check
         run: |
           go mod tidy
           git diff --exit-code go.mod go.sum
 
       - name: Go Build (host)
-        run: CGO_ENABLED=0 go build ./...
+        run: CGO_ENABLED=0 just build
 
       - name: Go Test
-        run: CGO_ENABLED=0 go test ./...
+        run: CGO_ENABLED=0 just test
 
       - name: Cross-compile Linux amd64
-        run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dist/pf-dashboard-${{ steps.ghd.outputs.semver }}-linux-amd64 .
+        run: BINARY=dist/pf-dashboard-${{ steps.ghd.outputs.semver }} CGO_ENABLED=0 just build-linux
 
       - name: Cross-compile FreeBSD amd64
-        run: GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build -o dist/pf-dashboard-${{ steps.ghd.outputs.semver }}-freebsd-amd64 .
+        run: BINARY=dist/pf-dashboard-${{ steps.ghd.outputs.semver }} CGO_ENABLED=0 just build-freebsd
 
       - name: Build source release tarball
-        run: make release-tarball VERSION="${{ steps.ghd.outputs.semver }}"
+        run: VERSION=${{ steps.ghd.outputs.semver }} just release-tarball
 
       - name: Compute artifact metadata
         id: artifact_meta

@@ -24,16 +24,28 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Verify FreeBSD runner toolchain
+      - name: Install and verify FreeBSD runner toolchain
         run: |
+          if ! command -v just >/dev/null 2>&1; then
+            if [ "$(id -u)" -eq 0 ]; then
+              pkg install -y just
+            elif command -v sudo >/dev/null 2>&1; then
+              sudo pkg install -y just
+            else
+              echo "just is missing and this runner cannot install packages"
+              exit 1
+            fi
+          fi
           uname -a
           command -v git
           command -v go
           command -v node
           command -v npm
+          command -v just
           go version
           node --version
           npm --version
+          just --version
 
       - name: Git describe
         id: ghd
@@ -59,22 +71,14 @@ jobs:
           echo "git describe: ${{ steps.ghd.outputs.describe }}"
           echo "computed semver: ${{ steps.ghd.outputs.semver }}"
 
-      - name: Install UI dependencies
-        working-directory: ui
-        run: npm ci
-
-      - name: Build UI
-        working-directory: ui
-        run: npm run build
-
       - name: Go build (native FreeBSD)
-        run: CGO_ENABLED=0 go build ./...
+        run: CGO_ENABLED=0 just build
 
       - name: Go test (native FreeBSD)
-        run: CGO_ENABLED=0 go test ./...
+        run: CGO_ENABLED=0 just test
 
       - name: Build FreeBSD native artifact
-        run: GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build -o dist/pf-dashboard-${{ steps.ghd.outputs.semver }}-freebsd-amd64-native .
+        run: BINARY=dist/pf-dashboard-${{ steps.ghd.outputs.semver }}-freebsd-amd64-native CGO_ENABLED=0 just build
 
       - name: Compute artifact metadata
         id: artifact_meta

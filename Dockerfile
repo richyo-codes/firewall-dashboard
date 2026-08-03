@@ -8,15 +8,15 @@ RUN npm run build
 FROM golang:1.25-alpine AS base
 WORKDIR /app
 COPY go.mod go.sum ./
-RUN go mod download
+RUN apk add --no-cache just && go mod download
 COPY . .
 COPY --from=ui-build /app/ui/dist ./ui/dist
 
 FROM base AS test
-RUN go test ./...
+RUN just test
 
 FROM base AS build
-RUN GOOS=linux GOARCH=amd64 go build -o pf-dashboard
+RUN just build
 
 FROM alpine:3.23 AS release
 RUN adduser -D appuser
